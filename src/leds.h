@@ -152,8 +152,8 @@ inline void ledsTick(uint32_t now) {
   }
 
   switch (_ledPersona) {
-    case LP_IDLE:                                 // ambient breathing pacer
-      _renderBreath(now);
+    case LP_IDLE:                                 // idle: bar off (breathing lives only in breathing mode)
+      fill_solid(_leds, LEDS_COUNT, CRGB::Black);
       break;
     case LP_BUSY: {                               // blue comet with fading tail
       fadeToBlackBy(_leds, LEDS_COUNT, 60);

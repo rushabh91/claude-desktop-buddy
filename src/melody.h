@@ -27,7 +27,7 @@ static const Note MEL_LEVELUP[]    = {{784, 80}, {988, 80}, {1175, 80}, {1568, 1
 inline void melodyStop() { _melSeq = nullptr; _melLen = 0; _melIdx = 0; }
 
 inline void melodyPlay(const Note* seq, uint8_t len) {
-  if (!settings().sound) return;
+  if (!settings().sound || settings().dnd) return;
   _melSeq = seq; _melLen = len; _melIdx = 0; _melNextAt = millis();
 }
 // Play a melody table without hand-counting its length.

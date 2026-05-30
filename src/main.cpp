@@ -123,6 +123,7 @@ static void applyBrightness() {
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
+    setCpuFrequencyMhz(240);   // full speed for active rendering
     Axp.SetLDO2(true);
     applyBrightness();
     screenOff = false;
@@ -162,13 +163,13 @@ void applyDisplayMode() {
   characterInvalidate();  // redraws character on next tick (text mode path)
 }
 
-const char* menuItems[] = { "settings", "turn off", "help", "about", "demo", "close" };
-const uint8_t MENU_N = 6;
+const char* menuItems[] = { "settings", "do not disturb", "turn off", "help", "about", "demo", "close" };
+const uint8_t MENU_N = 7;
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
-const char* settingsItems[] = { "brightness", "sound", "bluetooth", "wifi", "led", "do not disturb", "transcript", "clock rot", "ascii pet", "reset", "back" };
-const uint8_t SETTINGS_N = 11;
+const char* settingsItems[] = { "brightness", "sound", "bluetooth", "wifi", "led", "transcript", "clock rot", "ascii pet", "reset", "back" };
+const uint8_t SETTINGS_N = 10;
 
 bool    resetOpen = false;
 uint8_t resetSel  = 0;
@@ -195,12 +196,11 @@ static void applySetting(uint8_t idx) {
       break;
     case 3: s.wifi = !s.wifi; break;   // stored only — no WiFi stack linked
     case 4: s.led = !s.led; break;
-    case 5: s.dnd = !s.dnd; applyBrightness(); break;   // DND also dims the screen
-    case 6: s.hud = !s.hud; break;
-    case 7: s.clockRot = (s.clockRot + 1) % 3; break;
-    case 8: nextPet(); return;
-    case 9: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
-    case 10: settingsOpen = false; characterInvalidate(); return;
+    case 5: s.hud = !s.hud; break;
+    case 6: s.clockRot = (s.clockRot + 1) % 3; break;
+    case 7: nextPet(); return;
+    case 8: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
+    case 9: settingsOpen = false; characterInvalidate(); return;
   }
   settingsSave();
 }
@@ -288,7 +288,7 @@ static void drawSettings() {
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
   spr.setTextSize(1);
   Settings& s = settings();
-  bool vals[] = { s.sound, s.bt, s.wifi, s.led, s.dnd, s.hud };
+  bool vals[] = { s.sound, s.bt, s.wifi, s.led, s.hud };
   for (int i = 0; i < SETTINGS_N; i++) {
     bool sel = (i == settingsSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
@@ -299,13 +299,13 @@ static void drawSettings() {
     spr.setTextColor(p.textDim, PANEL);
     if (i == 0) {
       spr.printf("%u/4", brightLevel);
-    } else if (i >= 1 && i <= 6) {
+    } else if (i >= 1 && i <= 5) {
       spr.setTextColor(vals[i-1] ? GREEN : p.textDim, PANEL);
       spr.print(vals[i-1] ? " on" : "off");
-    } else if (i == 7) {
+    } else if (i == 6) {
       static const char* const RN[] = { "auto", "port", "land" };
       spr.print(RN[s.clockRot]);
-    } else if (i == 8) {
+    } else if (i == 7) {
       uint8_t total = buddySpeciesCount() + (gifAvailable ? 1 : 0);
       uint8_t pos   = buddyMode ? buddySpeciesIdx() + 1 : total;
       spr.printf("%u/%u", pos, total);
@@ -337,17 +337,18 @@ static void drawReset() {
 void menuConfirm() {
   switch (menuSel) {
     case 0: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 1: Axp.PowerOff(); break;
-    case 2:
+    case 1: settings().dnd = !settings().dnd; applyBrightness(); settingsSave(); break;
+    case 2: Axp.PowerOff(); break;
     case 3:
+    case 4:
       menuOpen = false;
       displayMode = DISP_INFO;
-      infoPage = (menuSel == 2) ? INFO_PG_BUTTONS : INFO_PG_CREDITS;
+      infoPage = (menuSel == 3) ? INFO_PG_BUTTONS : INFO_PG_CREDITS;
       applyDisplayMode();
       characterInvalidate();
       break;
-    case 4: dataSetDemo(!dataDemo()); break;
-    case 5: menuOpen = false; characterInvalidate(); break;
+    case 5: dataSetDemo(!dataDemo()); break;
+    case 6: menuOpen = false; characterInvalidate(); break;
   }
 }
 
@@ -364,7 +365,10 @@ void drawMenu() {
     spr.setCursor(mx + 6, my + 8 + i * 14);
     spr.print(sel ? "> " : "  ");
     spr.print(menuItems[i]);
-    if (i == 4) spr.print(dataDemo() ? "  on" : "  off");
+    if (i == 1) {
+      spr.setTextColor(settings().dnd ? GREEN : p.textDim, PANEL);
+      spr.print(settings().dnd ? "  on" : "  off");
+    } else if (i == 5) spr.print(dataDemo() ? "  on" : "  off");
   }
   drawMenuHints(p, mx, mw, my + mh - 12);
 }
@@ -1305,6 +1309,7 @@ void loop() {
     } else {
       Axp.SetLDO2(false);
       screenOff = true;
+      setCpuFrequencyMhz(80);   // idle: drop to BLE-min clock to save power
     }
   }
 
@@ -1581,6 +1586,7 @@ void loop() {
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
     Axp.SetLDO2(false);
     screenOff = true;
+    setCpuFrequencyMhz(80);   // idle: drop to BLE-min clock to save power
   }
 
   delay(screenOff ? 100 : 16);
