@@ -1,67 +1,66 @@
 # Usage Companion
 
-Pushes Claude Code token-usage percentages to the M5Stack Fire buddy over BLE every 20s.
+Pushes **real** Claude Code usage percentages to the M5Stack Fire buddy over BLE every 20s.
 The device status bar shows `S__% W__%` (session / weekly) colored green/yellow/red.
+
+The numbers come from the **official Anthropic usage API** — the same source the Claude Code
+statusline and tools like [claude-hud](https://github.com/jarrodwatts/claude-hud) use:
+
+```
+GET https://api.anthropic.com/api/oauth/usage
+→ { "five_hour": {"utilization": 0-100}, "seven_day": {"utilization": 0-100} }
+```
+
+`utilization` is the true percent-of-limit used — no token estimation or guessed caps.
+The OAuth token is read from your local Claude Code credentials (macOS Keychain
+`Claude Code-credentials`, falling back to `~/.claude/.credentials.json`).
 
 ## Setup
 
 ```bash
 # From the repo root:
 python3 -m venv .venv
-.venv/bin/pip install bleak
+.venv/bin/pip install bleak    # the API call itself uses only the stdlib
 ```
 
-### macOS Bluetooth permission (one-time)
+### One-time macOS permissions
 
-Python SIGABRTs if it doesn't have Bluetooth access. Grant it once:
-
-> **System Settings → Privacy & Security → Bluetooth → "+" → add your Terminal app**
-> (Terminal.app, iTerm2, Warp, etc.)
-
-After granting, the script runs directly from the terminal with no app bundle needed.
+1. **Bluetooth:** System Settings → Privacy & Security → Bluetooth → add your Terminal
+   app (Terminal.app, iTerm2, Warp, …). Without this, Python SIGABRTs when it touches BLE.
+2. **Keychain:** the first run prompts to read `Claude Code-credentials` — click
+   **Always Allow**.
 
 ## Running
 
 ```bash
-# From the repo root:
-.venv/bin/python tools/usage_companion/usage_companion.py
-```
-
-Dry-run (prints percentages, no BLE write — useful for checking token counts):
-
-```bash
+# Verify the numbers first (no BLE, just prints real %):
 .venv/bin/python tools/usage_companion/usage_companion.py --dry-run
+
+# Then run for real (scans, connects, pushes every 20s):
+.venv/bin/python tools/usage_companion/usage_companion.py
 ```
 
 ## Firmware compatibility
 
-| Firmware | Characteristic used | Notes |
+| Firmware | Characteristic | Notes |
 |---|---|---|
 | New (≥ 2026-05-31) | `6e400004` (plaintext) | No pairing needed |
 | Old | `6e400002` (encrypted) | Uses macOS stored bond LTK; pair with Hardware Buddy first |
 
-The companion auto-detects which characteristic the device has.
-
-## Cap tuning
-
-The percentages are `(output_tokens_in_window / cap) × 100`. Default caps:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `SESSION_CAP` | 88000 | Output tokens / 5-hour window |
-| `WEEKLY_CAP` | 500000 | Output tokens / 7-day window |
-
-These are rough approximations for Claude Code Pro Max. Adjust to match your plan:
-
-```bash
-SESSION_CAP=200000 WEEKLY_CAP=1000000 .venv/bin/python tools/usage_companion/usage_companion.py
-```
+The companion auto-detects which characteristic the device exposes.
 
 ## How it works
 
-1. Reads every `~/.claude/projects/**/*.jsonl` file
-2. Sums `output_tokens` from `assistant` entries in the last 5h and 7d
-3. Divides by cap → 0–100%
-4. Connects to any BLE device named `Claude*`
-5. Auto-detects the write characteristic (plaintext `6e400004` or encrypted `6e400002`)
-6. Writes `{"session_pct":N,"weekly_pct":M}\n` every 20s; reconnects on drop
+1. Reads the Claude Code OAuth token from the Keychain (or `.credentials.json`)
+2. `GET /api/oauth/usage` → `five_hour.utilization`, `seven_day.utilization`
+3. Connects to any BLE device named `Claude*`
+4. Writes `{"session_pct":N,"weekly_pct":M}\n` every 20s; reconnects on drop
+5. Re-reads the token if the API returns 401 (Claude Code refreshes it periodically)
+
+## Troubleshooting
+
+- **`no Claude Code OAuth token found`** — make sure Claude Code is logged in on this
+  machine (`claude` CLI or the desktop app, signed into your Anthropic account).
+- **Hangs on first run** — approve the Keychain access prompt.
+- **API users (no subscription)** — the usage API only returns data for Pro/Max/Team
+  plans; raw-API-key users have no rolling-window limits to report.
