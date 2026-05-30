@@ -7,6 +7,12 @@
 
 TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
 
+// Single definitions of the M5StickCPlus->M5Unified compat shims (declared
+// extern in include/M5StickCPlus.h).
+_AxpCompat  Axp;
+_BeepCompat Beep;
+_RtcCompat  Rtc;
+
 // Advertise as "Claude-XXXX" (last two BT MAC bytes) so multiple sticks
 // in one room are distinguishable in the desktop picker. Name persists in
 // btName for the BLUETOOTH info page.
@@ -24,6 +30,10 @@ const int W = 135, H = 240;
 const int CX = W / 2;
 const int CY_BASE = 120;
 const int LED_PIN = 10;          // red LED, active-low
+
+// Where the 135x240 portrait sprite lands on the Fire's larger panel. Computed
+// in setup() once the rotation is set; centers the stick-sized UI.
+static int spritePushX = 0, spritePushY = 0;
 
 // Colors used across multiple UI surfaces
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
@@ -94,12 +104,12 @@ static bool isFaceDown() {
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { M5.Axp.ScreenBreath(20 + brightLevel * 20); }
+static void applyBrightness() { Axp.ScreenBreath(20 + brightLevel * 20); }
 
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
-    M5.Axp.SetLDO2(true);
+    Axp.SetLDO2(true);
     applyBrightness();
     screenOff = false;
     wakeTransitionUntil = millis() + 12000;
@@ -109,7 +119,7 @@ static void wake() {
 bool     responseSent = false;
 
 static void beep(uint16_t freq, uint16_t dur) {
-  if (settings().sound) M5.Beep.tone(freq, dur);
+  if (settings().sound) Beep.tone(freq, dur);
 }
 
 static void sendCmd(const char* json) {
@@ -305,7 +315,7 @@ static void drawReset() {
 void menuConfirm() {
   switch (menuSel) {
     case 0: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 1: M5.Axp.PowerOff(); break;
+    case 1: Axp.PowerOff(); break;
     case 2:
     case 3:
       menuOpen = false;
@@ -356,9 +366,9 @@ static bool            _onUsb       = false;
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
-  _onUsb = M5.Axp.GetVBusVoltage() > 4.0f;
-  M5.Rtc.GetTime(&_clkTm);
-  M5.Rtc.GetDate(&_clkDt);
+  _onUsb = Axp.GetVBusVoltage() > 4.0f;
+  Rtc.GetTime(&_clkTm);
+  Rtc.GetDate(&_clkDt);
 }
 
 static void clockUpdateOrient() {
@@ -593,9 +603,9 @@ void drawInfo() {
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
 
-    int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
-    int iBat_mA = (int)M5.Axp.GetBatCurrent();
-    int vBus_mV = (int)(M5.Axp.GetVBusVoltage() * 1000);
+    int vBat_mV = (int)(Axp.GetBatVoltage() * 1000);
+    int iBat_mA = (int)Axp.GetBatCurrent();
+    int vBus_mV = (int)(Axp.GetVBusVoltage() * 1000);
     int pct = (vBat_mV - 3200) / 10;   // (v-3.2)/(4.2-3.2)*100 = (v-3.2)*100 = (mv-3200)/10
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
     bool usb = vBus_mV > 4000;
@@ -627,7 +637,7 @@ void drawInfo() {
     ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
     ln("  bright   %u/4", brightLevel);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
-    ln("  temp     %dC", (int)M5.Axp.GetTempInAXP192());
+    ln("  temp     %dC", (int)Axp.GetTempInAXP192());
 
   } else if (infoPage == 4) {
     _infoHeader(p, y, "BLUETOOTH", infoPage);
@@ -936,10 +946,24 @@ void drawHUD() {
 }
 
 void setup() {
+  // The Fire's 4MB PSRAM is added to the heap but is unreliable on this SDK
+  // build: allocations >4KB (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096) land in
+  // PSRAM and corrupt the heap (spinlock / UART-mutex / heap-walk asserts).
+  // Force every allocation into internal RAM so nothing ever touches PSRAM.
+  // Must run before the first large allocation (M5.begin / BLE / sprite).
+  heap_caps_malloc_extmem_enable(0xFFFFFFFFU);
+
+  // NOTE: deliberately NOT calling Serial.begin(). M5Unified doesn't start it
+  // and installing the UART0 driver here was triggering a boot-time crash on
+  // this board. Without it, the firmware's Serial.* debug calls are safe
+  // no-ops; the device talks to the desktop over BLE.
   M5.begin();
-  M5.Lcd.setRotation(0);
-  M5.Imu.Init();
-  M5.Beep.begin();
+  // The UI is laid out for the M5StickC Plus's 135x240 portrait panel. The
+  // Fire's panel has a different native orientation, so rotation 0 renders
+  // the buddy sideways — rotate to bring it upright.
+  M5.Lcd.setRotation(1);
+  M5.Imu.begin();
+  Beep.begin();
   startBt();
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);   // off
@@ -950,8 +974,14 @@ void setup() {
   petNameLoad();
   buddyInit();
 
-  // BLE stays always-on; s.bt is stored as a preference only.
+  // M5Canvas defaults sprites to PSRAM; keep this 64KB sprite in internal RAM
+  // (the M5StickC Plus had no PSRAM at all), avoiding the unreliable PSRAM.
+  spr.setPsram(false);
   spr.createSprite(W, H);
+  // Center the 135x240 sprite on the Fire's panel (the stick's screen was
+  // exactly 135x240, so it pushed at 0,0).
+  spritePushX = (M5.Lcd.width()  - W) / 2; if (spritePushX < 0) spritePushX = 0;
+  spritePushY = (M5.Lcd.height() - H) / 2; if (spritePushY < 0) spritePushY = 0;
   characterInit(nullptr);  // scan /characters/ for whatever is installed
   gifAvailable = characterLoaded();
   // species NVS: 0..N-1 = ASCII species, 0xFF = use GIF (also the default,
@@ -978,7 +1008,7 @@ void setup() {
       spr.drawString("a buddy appears", W/2, H/2 + 12);
     }
     spr.setTextDatum(TL_DATUM); spr.setTextSize(1);
-    spr.pushSprite(0, 0);
+    spr.pushSprite(spritePushX, spritePushY);
     delay(1800);
   }
 
@@ -987,7 +1017,7 @@ void setup() {
 
 void loop() {
   M5.update();
-  M5.Beep.update();
+  Beep.update();
   t++;
   uint32_t now = millis();
 
@@ -1053,11 +1083,11 @@ void loop() {
 
   // AXP power button (left side): short-press toggles screen off.
   // Long-press (6s) still powers off the device via AXP hardware.
-  if (M5.Axp.GetBtnPress() == 0x02) {
+  if (Axp.GetBtnPress() == 0x02) {
     if (screenOff) {
       wake();
     } else {
-      M5.Axp.SetLDO2(false);
+      Axp.SetLDO2(false);
       screenOff = true;
     }
   }
@@ -1226,7 +1256,7 @@ void loop() {
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();
     else if (menuOpen) drawMenu();
-    spr.pushSprite(0, 0);
+    spr.pushSprite(spritePushX, spritePushY);
   }
 
   // Face-down nap: dim immediately, pause animations, accumulate sleep time.
@@ -1243,7 +1273,7 @@ void loop() {
   if (!napping && faceDownFrames >= 15) {
     napping = true;
     napStartMs = now;
-    M5.Axp.ScreenBreath(8);
+    Axp.ScreenBreath(8);
     dimmed = true;
   } else if (napping && faceDownFrames <= -8) {
     napping = false;
@@ -1257,7 +1287,7 @@ void loop() {
   // No auto-off on USB power — clock face wants to stay visible while charging.
   if (!screenOff && !inPrompt && !_onUsb
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
-    M5.Axp.SetLDO2(false);
+    Axp.SetLDO2(false);
     screenOff = true;
   }
 
