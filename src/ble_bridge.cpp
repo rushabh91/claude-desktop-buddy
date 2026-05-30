@@ -13,6 +13,11 @@
 #define NUS_SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #define NUS_RX_UUID      "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 #define NUS_TX_UUID      "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+// Plaintext (unencrypted) write characteristic for the usage companion.
+// The companion doesn't need to bond — it only ever pushes usage percentages.
+// Writes flow into the same rxPush → _applyJson path; session_pct/weekly_pct
+// are harmless if they arrive from an unauthenticated peer.
+#define NUS_USAGE_UUID   "6e400004-b5a3-f393-e0a9-e50e24dcca9e"
 
 // Incoming bytes are buffered in a simple ring for bleRead()/bleAvailable().
 // Sized to hold a transcript snapshot JSON plus headroom; the GATT layer
@@ -29,7 +34,7 @@ static portMUX_TYPE rxMux = portMUX_INITIALIZER_UNLOCKED;
 static BLEServer*         server = nullptr;
 static BLECharacteristic* txChar = nullptr;
 static BLECharacteristic* rxChar = nullptr;
-static volatile bool      connected = false;
+static volatile int       connCount = 0;  // number of currently connected centrals
 static volatile bool      secure = false;
 static volatile uint32_t  passkey = 0;
 static volatile uint16_t  mtu = 23;
@@ -54,16 +59,20 @@ class RxCallbacks : public BLECharacteristicCallbacks {
 
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* s) override {
-    connected = true;
-    Serial.println("[ble] connected");
+    connCount++;
+    Serial.printf("[ble] connected (total=%d)\n", (int)connCount);
+    // Re-advertise immediately so a second central can find/connect while
+    // this connection is active (e.g. desktop app + usage companion).
+    BLEDevice::startAdvertising();
   }
   void onDisconnect(BLEServer* s) override {
-    connected = false;
-    secure = false;
-    passkey = 0;
-    mtu = 23;
-    Serial.println("[ble] disconnected");
-    // Restart advertising so the next client can find us.
+    if (connCount > 0) connCount--;
+    if (connCount == 0) {
+      secure = false;
+      passkey = 0;
+      mtu = 23;
+    }
+    Serial.printf("[ble] disconnected (total=%d)\n", (int)connCount);
     BLEDevice::startAdvertising();
   }
   void onMtuChanged(BLEServer*, esp_ble_gatts_cb_param_t* param) override {
@@ -121,6 +130,15 @@ void bleInit(const char* deviceName) {
   rxChar->setAccessPermissions(ESP_GATT_PERM_WRITE_ENCRYPTED);
   rxChar->setCallbacks(new RxCallbacks());
 
+  // Plaintext write characteristic for the usage companion.
+  // No encryption required — the companion needs no pairing/bonding.
+  BLECharacteristic* usageChar = svc->createCharacteristic(
+    NUS_USAGE_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
+  );
+  usageChar->setAccessPermissions(ESP_GATT_PERM_WRITE);
+  usageChar->setCallbacks(new RxCallbacks());
+
   svc->start();
 
   BLESecurity* sec = new BLESecurity();
@@ -156,7 +174,8 @@ void bleInit(const char* deviceName) {
   Serial.printf("[ble] advertising as '%s'\n", deviceName);
 }
 
-bool bleConnected() { return connected; }
+bool bleConnected() { return connCount > 0; }
+int  bleConnCount() { return connCount; }
 bool bleSecure()    { return secure; }
 uint32_t blePasskey() { return passkey; }
 
@@ -188,7 +207,7 @@ int bleRead() {
 }
 
 size_t bleWrite(const uint8_t* data, size_t len) {
-  if (!connected || !txChar) return 0;
+  if (connCount == 0 || !txChar) return 0;
   // ATT notify payload is limited to (MTU - 3). macOS negotiates 185, so
   // the 182-byte chunk works there; use the live mtu so a peer that caps
   // at the 23-byte default doesn't get truncated notifies.

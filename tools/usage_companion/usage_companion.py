@@ -34,8 +34,9 @@ from datetime import datetime, timezone, timedelta
 from bleak import BleakClient, BleakScanner
 
 # ── NUS service / characteristic UUIDs (same as firmware) ──────────────────────
-NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-NUS_RX      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # write here → device receives
+NUS_SERVICE  = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+NUS_RX       = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # encrypted — requires bonding
+NUS_USAGE_RX = "6e400004-b5a3-f393-e0a9-e50e24dcca9e"  # plaintext — no bonding needed
 
 # ── Configurable caps (tune to your subscription plan) ─────────────────────────
 SESSION_HOURS = 5
@@ -139,7 +140,7 @@ async def push_loop(dry_run: bool = False):
                     print(f"[companion] → {payload.strip()}")
                     if not dry_run:
                         await client.write_gatt_char(
-                            NUS_RX,
+                            NUS_USAGE_RX,
                             payload.encode("utf-8"),
                             response=False,
                         )
