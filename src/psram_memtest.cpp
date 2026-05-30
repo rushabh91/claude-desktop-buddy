@@ -84,7 +84,7 @@ void setup() {
 
   // Bring BLE up exactly as the real firmware does, then re-test.
   say("init BLE...");
-  bleInit("memtest-psram");
+  bleInit("Claude-MEMTEST");
   say("Test2 BLE on (2MB)");
   bool ok2 = psramTest(2 * 1024 * 1024);
   say(ok2 ? "Test2 PASS" : "Test2 FAIL", ok2 ? 0x07E0 : 0xF800);
