@@ -1,0 +1,25 @@
+#!/bin/bash
+# Launcher for UsageCompanion — runs as a proper .app so macOS grants Bluetooth access.
+# A bare `python3 usage_companion.py` SIGABRTs on macOS because the interpreter has no
+# NSBluetoothAlwaysUsageDescription entitlement. Wrapping in a .app bundle fixes that.
+
+# Locate the companion script relative to this bundle
+BUNDLE_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="$(cd "$BUNDLE_DIR/.." && pwd)"
+SCRIPT="$REPO_ROOT/usage_companion.py"
+VENV="$REPO_ROOT/../.venv"
+
+# Prefer the repo's venv python; fall back to system python3
+if [ -x "$VENV/bin/python3" ]; then
+    PYTHON="$VENV/bin/python3"
+else
+    PYTHON="$(which python3)"
+fi
+
+if [ ! -f "$SCRIPT" ]; then
+    osascript -e 'display dialog "usage_companion.py not found next to UsageCompanion.app" buttons {"OK"} default button 1'
+    exit 1
+fi
+
+# Run in a Terminal window so the user can see live output
+exec "$PYTHON" "$SCRIPT" "$@"
