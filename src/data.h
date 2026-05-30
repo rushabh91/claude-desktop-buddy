@@ -18,7 +18,7 @@ struct TamaState {
   uint16_t lineGen;          // bumps when lines change — lets UI reset scroll
   char     promptId[40];     // pending permission request ID; empty = no prompt
   char     promptTool[20];
-  char     promptHint[44];
+  char     promptHint[96];   // wider on the landscape screen for richer detail
 };
 
 // ---------------------------------------------------------------------------
@@ -167,6 +167,15 @@ inline void dataPoll(TamaState* out) {
     out->recentlyCompleted=s.c; out->tokensToday=s.tok; out->lastUpdated=now;
     out->connected = true;
     snprintf(out->msg, sizeof(out->msg), "demo: %s", s.n);
+    // Dummy permission prompt during the "attention" scenario so the approval
+    // panel (and its alert melody / LED) can be exercised without a live bridge.
+    if (s.w > 0) {
+      strcpy(out->promptId,   "demo-req-1");
+      strcpy(out->promptTool, "Bash");
+      strcpy(out->promptHint, "rm -rf /tmp/build && make clean all");
+    } else {
+      out->promptId[0] = out->promptTool[0] = out->promptHint[0] = 0;
+    }
     return;
   }
 

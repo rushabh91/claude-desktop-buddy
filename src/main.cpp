@@ -28,8 +28,8 @@ static void startBt() {
 #include "stats.h"
 #include "leds.h"
 #include "melody.h"
-const int W = 135, H = 240;
-const int CX = W / 2;
+const int W = 320, H = 240;   // full landscape panel = the PSRAM sprite size
+const int CX = W / 2;         // 160
 const int CY_BASE = 120;
 
 // Where the 135x240 portrait sprite lands on the Fire's larger panel. Computed
@@ -54,7 +54,7 @@ unsigned long t = 0;
 // Menu
 bool    menuOpen    = false;
 uint8_t menuSel     = 0;
-uint8_t brightLevel = 4;           // 0..4 → ScreenBreath 20..100
+uint8_t brightLevel = 0;           // 0..4 → ScreenBreath 20..100 (boot dim)
 bool    btnALong    = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
@@ -126,6 +126,9 @@ static void wake() {
   if (dimmed) { applyBrightness(); dimmed = false; }
 }
 bool     responseSent = false;
+bool     promptDismissed = false;    // B snoozes the panel for a few seconds
+uint32_t dismissedUntil = 0;
+bool     promptPanelUp = false;      // approval panel on screen (awaiting or "sent...")
 
 static void beep(uint16_t freq, uint16_t dur) {
   if (settings().sound) Beep.tone(freq, dur);
@@ -253,23 +256,25 @@ static void applyReset(uint8_t idx) {
 // pixel triangles. Panels add MENU_HINT_H to height and call this at bottom.
 const int MENU_HINT_H = 14;
 static void drawMenuHints(const Palette& p, int mx, int mw, int hy,
-                          const char* downLbl = "A", const char* rightLbl = "B") {
+                          const char* bLbl = "select") {
   spr.drawFastHLine(mx + 6, hy - 4, mw - 12, p.textDim);
   spr.setTextColor(p.textDim, PANEL);
-  // 6px/glyph at size 1; triangle goes 4px after the label ends
+  // A = down, C = up, B = the action (select/change).
   int x = mx + 8;
-  spr.setCursor(x, hy); spr.print(downLbl);
-  x += strlen(downLbl) * 6 + 4;
-  spr.fillTriangle(x, hy + 1, x + 6, hy + 1, x + 3, hy + 6, p.textDim);
-  x = mx + mw / 2 + 4;
-  spr.setCursor(x, hy); spr.print(rightLbl);
-  x += strlen(rightLbl) * 6 + 4;
-  spr.fillTriangle(x, hy, x, hy + 6, x + 5, hy + 3, p.textDim);
+  spr.setCursor(x, hy); spr.print("A");
+  spr.fillTriangle(x + 8, hy + 1, x + 14, hy + 1, x + 11, hy + 6, p.textDim);   // down
+  x += 30;
+  spr.setCursor(x, hy); spr.print("C");
+  spr.fillTriangle(x + 8, hy + 6, x + 14, hy + 6, x + 11, hy + 1, p.textDim);   // up
+  spr.setTextDatum(TR_DATUM);
+  char b[16]; snprintf(b, sizeof(b), "B %s", bLbl);
+  spr.drawString(b, mx + mw - 6, hy);
+  spr.setTextDatum(TL_DATUM);
 }
 
 static void drawSettings() {
   const Palette& p = characterPalette();
-  int mw = 118, mh = 16 + SETTINGS_N * 14 + MENU_HINT_H;
+  int mw = 180, mh = 16 + SETTINGS_N * 14 + MENU_HINT_H;
   int mx = (W - mw) / 2, my = (H - mh) / 2;
   spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
@@ -298,12 +303,12 @@ static void drawSettings() {
       spr.printf("%u/%u", pos, total);
     }
   }
-  drawMenuHints(p, mx, mw, my + mh - 12, "Next", "Change");
+  drawMenuHints(p, mx, mw, my + mh - 12, "change");
 }
 
 static void drawReset() {
   const Palette& p = characterPalette();
-  int mw = 118, mh = 16 + RESET_N * 14 + MENU_HINT_H;
+  int mw = 180, mh = 16 + RESET_N * 14 + MENU_HINT_H;
   int mx = (W - mw) / 2, my = (H - mh) / 2;
   spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
   spr.drawRoundRect(mx, my, mw, mh, 4, HOT);
@@ -340,7 +345,7 @@ void menuConfirm() {
 
 void drawMenu() {
   const Palette& p = characterPalette();
-  int mw = 118, mh = 16 + MENU_N * 14 + MENU_HINT_H;
+  int mw = 180, mh = 16 + MENU_N * 14 + MENU_HINT_H;
   int mx = (W - mw) / 2, my = (H - mh) / 2;
   spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
@@ -580,17 +585,14 @@ void drawInfo() {
 
   } else if (infoPage == 1) {
     _infoHeader(p, y, "BUTTONS", infoPage);
-    spr.setTextColor(p.text, p.bg);    ln("A   front");
-    spr.setTextColor(p.textDim, p.bg); ln("    next screen");
-    ln("    approve prompt"); y += 4;
-    spr.setTextColor(p.text, p.bg);    ln("B   right side");
-    spr.setTextColor(p.textDim, p.bg); ln("    next page");
-    ln("    deny prompt"); y += 4;
-    spr.setTextColor(p.text, p.bg);    ln("hold A");
-    spr.setTextColor(p.textDim, p.bg); ln("    menu"); y += 4;
-    spr.setTextColor(p.text, p.bg);    ln("Power  left side");
-    spr.setTextColor(p.textDim, p.bg); ln("    tap = screen off");
-    ln("    hold 6s = off");
+    spr.setTextColor(p.text, p.bg);    ln("A (left)");
+    spr.setTextColor(p.textDim, p.bg); ln("  next screen / approve"); y += 4;
+    spr.setTextColor(p.text, p.bg);    ln("B (middle)");
+    spr.setTextColor(p.textDim, p.bg); ln("  scroll/page / dismiss"); y += 4;
+    spr.setTextColor(p.text, p.bg);    ln("C (right)");
+    spr.setTextColor(p.textDim, p.bg); ln("  breathe / back / deny"); y += 4;
+    spr.setTextColor(p.text, p.bg);    ln("hold A   menu");
+    spr.setTextColor(p.text, p.bg);    ln("Power    tap=off, hold=shutdown");
 
   } else if (infoPage == 2) {
     _infoHeader(p, y, "CLAUDE", infoPage);
@@ -611,29 +613,23 @@ void drawInfo() {
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
 
-    int vBat_mV = (int)(Axp.GetBatVoltage() * 1000);
-    int iBat_mA = (int)Axp.GetBatCurrent();
-    int vBus_mV = (int)(Axp.GetVBusVoltage() * 1000);
-    int pct = (vBat_mV - 3200) / 10;   // (v-3.2)/(4.2-3.2)*100 = (v-3.2)*100 = (mv-3200)/10
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    bool usb = vBus_mV > 4000;
-    bool charging = usb && iBat_mA > 1;
-    bool full = usb && vBat_mV > 4100 && iBat_mA < 10;
+    // The Fire's IP5306 reports a coarse level (0/25/50/75/100), -1 if
+    // unreadable, plus charging state — no battery voltage/current on this board.
+    int lvl = M5.Power.getBatteryLevel();
+    bool charging = M5.Power.isCharging();
 
     spr.setTextColor(p.text, p.bg);
     spr.setTextSize(2);
     spr.setCursor(4, y);
-    spr.printf("%d%%", pct);
+    if (lvl < 0) spr.print("--"); else spr.printf("%d%%", lvl);
     spr.setTextSize(1);
-    spr.setTextColor(full ? GREEN : (charging ? HOT : p.textDim), p.bg);
+    spr.setTextColor(charging ? 0x07FF : p.textDim, p.bg);
     spr.setCursor(60, y + 4);
-    spr.print(full ? "full" : (charging ? "charging" : (usb ? "usb" : "battery")));
+    spr.print(charging ? "charging" : "on battery");
     y += 20;
 
     spr.setTextColor(p.textDim, p.bg);
-    ln("  battery  %d.%02dV", vBat_mV/1000, (vBat_mV%1000)/10);
-    ln("  current  %+dmA", iBat_mA);
-    if (usb) ln("  usb in   %d.%02dV", vBus_mV/1000, (vBus_mV%1000)/10);
+    ln("  coarse level (IP5306)");
     y += 8;
 
     spr.setTextColor(p.text, p.bg);
@@ -647,7 +643,6 @@ void drawInfo() {
     ln("  psram    %uKB", (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     ln("  bright   %u/4", brightLevel);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
-    ln("  temp     %dC", (int)Axp.GetTempInAXP192());
 
   } else if (infoPage == 4) {
     _infoHeader(p, y, "BLUETOOTH", infoPage);
@@ -691,26 +686,27 @@ void drawInfo() {
     y += 4;
     spr.setTextColor(p.text, p.bg);
     ln("Felix Rieseberg");
+    ln("Rushabh Shah (Fire port)");
     y += 12;
     spr.setTextColor(p.textDim, p.bg);
     ln("source");
     y += 4;
     spr.setTextColor(p.text, p.bg);
-    ln("github.com/anthropics");
+    ln("github.com/rushabh91");
     ln("/claude-desktop-buddy");
     y += 12;
     spr.setTextColor(p.textDim, p.bg);
     ln("hardware");
     y += 4;
-    ln("M5StickC Plus");
-    ln("ESP32 + AXP192");
+    ln("M5Stack Fire");
+    ln("ESP32 + IP5306");
   }
 }
 
 
 // Greedy word-wrap into fixed-width rows. Continuation rows get a leading
 // space. Returns number of rows written.
-static uint8_t wrapInto(const char* in, char out[][24], uint8_t maxRows, uint8_t width) {
+static uint8_t wrapInto(const char* in, char out[][56], uint8_t maxRows, uint8_t width) {
   uint8_t row = 0, col = 0;
   const char* p = in;
   while (*p && row < maxRows) {
@@ -744,46 +740,51 @@ static uint8_t wrapInto(const char* in, char out[][24], uint8_t maxRows, uint8_t
 
 static void drawApproval() {
   const Palette& p = characterPalette();
-  const int AREA = 78;
-  spr.fillRect(0, H - AREA, W, AREA, p.bg);
-  spr.drawFastHLine(0, H - AREA, W, p.textDim);
+  const int AREA = 88;
+  const int top = H - AREA;
+  spr.fillRect(0, top, W, AREA, p.bg);
+  spr.drawFastHLine(0, top, W, p.textDim);
 
+  // Header: "approve?" + elapsed seconds (turns hot after 10s).
   spr.setTextSize(1);
-  spr.setTextColor(p.textDim, p.bg);
-  spr.setCursor(4, H - AREA + 4);
   uint32_t waited = (millis() - promptArrivedMs) / 1000;
-  if (waited >= 10) spr.setTextColor(HOT, p.bg);
-  spr.printf("approve? %lus", (unsigned long)waited);
+  spr.setTextColor(waited >= 10 ? HOT : p.textDim, p.bg);
+  spr.setCursor(6, top + 5);
+  spr.printf("approve?  %lus", (unsigned long)waited);
 
-  // Size 2 only if it fits one line (~10 chars at 12px on 135px screen)
+  // Tool name, large (fits at size 2 across the wide screen).
   int toolLen = strlen(tama.promptTool);
   spr.setTextColor(p.text, p.bg);
-  spr.setTextSize(toolLen <= 10 ? 2 : 1);
-  spr.setCursor(4, H - AREA + (toolLen <= 10 ? 14 : 18));
+  spr.setTextSize(toolLen <= 24 ? 2 : 1);
+  spr.setCursor(6, top + 18);
   spr.print(tama.promptTool);
   spr.setTextSize(1);
 
-  // Hint wraps at ~21 chars to two lines under the tool name
+  // Hint wrapped to up to 3 full-width lines (no mid-word truncation).
   spr.setTextColor(p.textDim, p.bg);
-  int hlen = strlen(tama.promptHint);
-  spr.setCursor(4, H - AREA + 34);
-  spr.printf("%.21s", tama.promptHint);
-  if (hlen > 21) {
-    spr.setCursor(4, H - AREA + 42);
-    spr.printf("%.21s", tama.promptHint + 21);
+  static char hl[3][56];
+  uint8_t hn = wrapInto(tama.promptHint, hl, 3, (W - 12) / 6);
+  for (uint8_t i = 0; i < hn; i++) {
+    spr.setCursor(6, top + 40 + i * 9);
+    spr.print(hl[i]);
   }
 
+  // Footer buttons (A approve / B deny — remapped to A/C in the button rework).
   if (responseSent) {
     spr.setTextColor(p.textDim, p.bg);
-    spr.setCursor(4, H - 12);
+    spr.setCursor(6, H - 11);
     spr.print("sent...");
   } else {
     spr.setTextColor(GREEN, p.bg);
-    spr.setCursor(4, H - 12);
-    spr.print("A: approve");
+    spr.setCursor(6, H - 11);
+    spr.print("A approve");
+    spr.setTextColor(p.textDim, p.bg);
+    spr.setTextDatum(TC_DATUM);
+    spr.drawString("B dismiss", W / 2, H - 11);
     spr.setTextColor(HOT, p.bg);
-    spr.setCursor(W - 48, H - 12);
-    spr.print("B: deny");
+    spr.setTextDatum(TR_DATUM);
+    spr.drawString("deny C", W - 6, H - 11);
+    spr.setTextDatum(TL_DATUM);
   }
 }
 
@@ -908,9 +909,9 @@ void drawPet() {
 }
 
 void drawHUD() {
-  if (tama.promptId[0]) { drawApproval(); return; }
+  if (promptPanelUp) { drawApproval(); return; }
   const Palette& p = characterPalette();
-  const int SHOW = 3, LH = 8, WIDTH = 21;
+  const int SHOW = 5, LH = 8, WIDTH = (W - 8) / 6;   // landscape: ~52 cols, 5 lines
   const int AREA = SHOW * LH + 4;
   spr.fillRect(0, H - AREA, W, AREA, p.bg);
   spr.setTextSize(1);
@@ -926,7 +927,7 @@ void drawHUD() {
 
   // Wrap all transcript lines into a flat display buffer. Track which
   // transcript index each display row came from, so we can dim older ones.
-  static char disp[32][24];
+  static char disp[32][56];
   static uint8_t srcOf[32];
   uint8_t nDisp = 0;
   for (uint8_t i = 0; i < tama.nLines && nDisp < 32; i++) {
@@ -953,6 +954,67 @@ void drawHUD() {
     spr.setCursor(W - 18, H - LH - 2);
     spr.printf("-%u", msgScroll);
   }
+}
+
+// The iconic Bluetooth rune, drawn with line segments into a ~11x16 box.
+static void drawBtGlyph(int x, int y, uint16_t col) {
+  int c = x + 5, t = y, b = y + 14, w = 4;
+  int q1 = y + 3, q3 = y + 11;
+  spr.drawLine(c, t, c, b, col);
+  spr.drawLine(c - w, q1, c + w, q3, col);
+  spr.drawLine(c - w, q3, c + w, q1, col);
+  spr.drawLine(c + w, q1, c, t, col);
+  spr.drawLine(c + w, q3, c, b, col);
+}
+
+// Persistent top status bar (drawn into the sprite): BT state, battery, clock.
+// Center is intentionally left free for the session/weekly usage % (parked).
+static void drawStatusBar(const Palette& p) {
+  const int BAR_H = 22;
+  spr.fillRect(0, 0, W, BAR_H, p.bg);
+
+  // Bluetooth: green linked+secure, yellow linked, dim advertising, slashed off.
+  bool linked = bleConnected();
+  uint16_t btcol = linked ? (bleSecure() ? GREEN : 0xFFE0) : p.textDim;
+  drawBtGlyph(4, 4, btcol);
+  if (!settings().bt) spr.drawLine(2, 4, 14, 18, HOT);
+  spr.setTextSize(1);
+  spr.setTextColor(p.textDim, p.bg);
+  spr.setCursor(22, 8);
+  spr.print(linked ? (dataBtActive() ? "linked" : "paired") : btName);
+
+  // Battery: outlined cell + fill + percentage. The Fire's IP5306 only reports
+  // a coarse level (0/25/50/75/100) — there's no voltage readout — and -1 if
+  // it can't be read. isCharging() works, so show charge state too.
+  int lvl = M5.Power.getBatteryLevel();
+  bool charging = M5.Power.isCharging();
+  const int bx = 198, by = 6;
+  spr.drawRect(bx, by, 22, 11, p.text);
+  spr.fillRect(bx + 22, by + 3, 2, 5, p.text);                 // terminal nub
+  if (lvl < 0) {
+    spr.setTextColor(p.textDim, p.bg);
+    spr.setCursor(bx + 28, by + 2);
+    spr.print("--");
+  } else {
+    uint16_t bcol = charging ? 0x07FF : (lvl >= 50 ? GREEN : lvl >= 25 ? 0xFFE0 : HOT);
+    spr.fillRect(bx + 2, by + 2, (18 * lvl) / 100, 7, bcol);   // charge fill
+    spr.setTextColor(bcol, p.bg);
+    spr.setCursor(bx + 28, by + 2);
+    spr.printf("%d%%", lvl);
+  }
+
+  // Clock (rightmost), from the millis()-seeded software clock.
+  char hm[6];
+  if (dataRtcValid()) snprintf(hm, sizeof(hm), "%02u:%02u", _clkTm.Hours, _clkTm.Minutes);
+  else                strcpy(hm, "--:--");
+  spr.setTextDatum(TR_DATUM);
+  spr.setTextSize(2);
+  spr.setTextColor(p.text, p.bg);
+  spr.drawString(hm, W - 4, 3);
+  spr.setTextDatum(TL_DATUM);
+  spr.setTextSize(1);
+
+  spr.drawFastHLine(0, BAR_H - 1, W, p.textDim);
 }
 
 // Dedicated breathing-exercise screen, drawn direct to the LCD (full 320x240).
@@ -1049,16 +1111,16 @@ void setup() {
   petNameLoad();
   buddyInit();
 
-  // PSRAM as a framebuffer is unstable on this board: a full-screen sprite in
-  // PSRAM boot-loops with BLE active (Phase 0 spike confirmed it — the CPU
-  // reading the framebuffer out of PSRAM each frame, concurrent with the BLE
-  // radio, trips the ESP32 PSRAM cache hazard and corrupts the heap). Keep the
-  // sprite in internal RAM. The landscape redesign uses Architecture B: a
-  // 320x140 buddy sprite in internal RAM + direct-to-LCD for static screens.
-  spr.setPsram(false);
-  spr.createSprite(W, H);
-  spritePushX = (M5.Lcd.width()  - W) / 2; if (spritePushX < 0) spritePushX = 0;
-  spritePushY = (M5.Lcd.height() - H) / 2; if (spritePushY < 0) spritePushY = 0;
+  // Full-screen 320x240 sprite in PSRAM. A memtest proved PSRAM is reliable
+  // under BLE + sustained sprite-push, and the 135x240 PSRAM sprite was stable
+  // in the full firmware — so this scales it to the whole panel. The framebuffer
+  // (150KB) lives in PSRAM; the extmem guard keeps every other allocation
+  // internal/DMA-safe. (Draw code still uses W=135 here — looks offset until the
+  // landscape layout rework; this step only proves 320x240 PSRAM is stable.)
+  spr.setPsram(true);
+  spr.createSprite(320, 240);
+  spritePushX = 0;
+  spritePushY = 0;
   characterInit(nullptr);  // scan /characters/ for whatever is installed
   gifAvailable = characterLoaded();
   // species NVS: 0..N-1 = ASCII species, 0xFF = use GIF (also the default,
@@ -1143,6 +1205,7 @@ void loop() {
     strncpy(lastPromptId, tama.promptId, sizeof(lastPromptId)-1);
     lastPromptId[sizeof(lastPromptId)-1] = 0;
     responseSent = false;
+    promptDismissed = false;
     if (tama.promptId[0]) {
       promptArrivedMs = millis();
       wake();
@@ -1151,6 +1214,9 @@ void loop() {
       // only runs from drawHUD which only runs in DISP_NORMAL.
       displayMode = DISP_NORMAL;
       menuOpen = settingsOpen = resetOpen = false;
+      // Absorb any in-flight press (e.g. you were navigating Info when the
+      // prompt popped) so it doesn't accidentally approve/deny what just appeared.
+      swallowBtnA = swallowBtnB = swallowBtnC = true;
       // A prompt takes priority over a breathing session so it's never missed.
       if (breathOpen) { breathOpen = false; M5.Lcd.fillScreen(characterPalette().bg); }
       applyDisplayMode();
@@ -1159,7 +1225,14 @@ void loop() {
     }
   }
 
-  bool inPrompt = tama.promptId[0] && !responseSent;
+  // A dismissed prompt re-appears after a short snooze (if still pending).
+  if (promptDismissed && (int32_t)(now - dismissedUntil) >= 0) promptDismissed = false;
+  bool inPrompt = tama.promptId[0] && !responseSent && !promptDismissed;
+  promptPanelUp = tama.promptId[0] && !promptDismissed;
+  // A/B/C only act on the prompt when its panel is actually visible (home).
+  // On Info/Pet, the buttons keep their navigation roles (C = back to home,
+  // which reveals the prompt) so you never decline something you can't see.
+  bool promptShown = promptPanelUp && displayMode == DISP_NORMAL;
 
   // Button-press wake. Track which button woke the screen so its full
   // press cycle (including long-press) is swallowed — you don't want
@@ -1215,16 +1288,20 @@ void loop() {
   }
   if (M5.BtnA.wasReleased()) {
     if (!btnALong && !swallowBtnA) {
-      if (inPrompt) {
-        char cmd[96];
-        snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
-        sendCmd(cmd);
-        responseSent = true;
-        uint32_t tookS = (millis() - promptArrivedMs) / 1000;
-        statsOnApproval(tookS);
-        PLAY_MELODY(MEL_APPROVE);
-        ledsFlashApprove();
-        if (tookS < 5) triggerOneShot(P_HEART, 2000);
+      if (promptShown) {
+        if (!responseSent) {
+          char cmd[96];
+          snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
+          sendCmd(cmd);
+          responseSent = true;
+          uint32_t tookS = (millis() - promptArrivedMs) / 1000;
+          statsOnApproval(tookS);
+          PLAY_MELODY(MEL_APPROVE);
+          ledsFlashApprove();
+          if (tookS < 5) triggerOneShot(P_HEART, 2000);
+        } else {
+          promptDismissed = true; dismissedUntil = now + 8000;   // clear "sent..."
+        }
       } else if (resetOpen) {
         beep(1800, 30);
         resetSel = (resetSel + 1) % RESET_N;
@@ -1249,14 +1326,11 @@ void loop() {
   if (M5.BtnB.wasPressed()) {
     if (swallowBtnB) { swallowBtnB = false; }
     else
-    if (inPrompt) {
-      char cmd[96];
-      snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
-      sendCmd(cmd);
-      responseSent = true;
-      statsOnDenial();
-      PLAY_MELODY(MEL_DENY);
-      ledsFlashDeny();
+    if (promptShown) {
+      // Dismiss: hide the panel without deciding; it re-shows after a snooze.
+      promptDismissed = true;
+      dismissedUntil = now + 8000;
+      beep(900, 40);
     } else if (resetOpen) {
       beep(2400, 30);
       applyReset(resetSel);
@@ -1279,11 +1353,38 @@ void loop() {
     }
   }
 
-  // BtnC on the home screen → enter the breathing-exercise mode.
+  // BtnC: deny a prompt / move up in menus / back to home / enter breathing.
   if (M5.BtnC.wasPressed()) {
     if (swallowBtnC) { swallowBtnC = false; }
-    else if (!menuOpen && !settingsOpen && !resetOpen && !inPrompt
-             && displayMode == DISP_NORMAL) {
+    else if (promptShown) {
+      if (!responseSent) {
+        char cmd[96];
+        snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
+        sendCmd(cmd);
+        responseSent = true;
+        statsOnDenial();
+        PLAY_MELODY(MEL_DENY);
+        ledsFlashDeny();
+      } else {
+        promptDismissed = true; dismissedUntil = now + 8000;   // clear "sent..."
+      }
+    } else if (resetOpen) {
+      beep(1800, 30);
+      resetSel = (resetSel + RESET_N - 1) % RESET_N;
+      resetConfirmIdx = 0xFF;
+    } else if (settingsOpen) {
+      beep(1800, 30);
+      settingsSel = (settingsSel + SETTINGS_N - 1) % SETTINGS_N;
+    } else if (menuOpen) {
+      beep(1800, 30);
+      menuSel = (menuSel + MENU_N - 1) % MENU_N;
+    } else if (displayMode != DISP_NORMAL) {
+      beep(1800, 30);
+      displayMode = DISP_NORMAL;
+      applyDisplayMode();
+      characterInvalidate();
+      if (buddyMode) buddyInvalidate();
+    } else {
       breathOpen = true; breathStartMs = now; breathDirty = true;
       beep(1500, 60);
     }
@@ -1340,6 +1441,19 @@ void loop() {
   if (breathOpen) {
     drawBreath(now);
   } else {
+  // When an overlay (menu/settings/reset, or the taller approval panel) closes,
+  // the buddy + HUD only repaint their own regions, leaving a strip of the old
+  // panel behind. Clear the whole sprite once on that transition and force a
+  // full buddy redraw.
+  static bool wasOverlay = false;
+  bool isOverlay = menuOpen || settingsOpen || resetOpen || promptShown;
+  if (wasOverlay && !isOverlay) {
+    spr.fillSprite(characterPalette().bg);
+    characterInvalidate();
+    if (buddyMode) buddyInvalidate();
+  }
+  wasOverlay = isOverlay;
+
   if (napping || screenOff || landscapeClock) {
     // skip sprite render — face-down, powered off, or landscape clock
     // (which draws direct-to-LCD below)
@@ -1378,6 +1492,7 @@ void loop() {
     else if (displayMode == DISP_INFO) drawInfo();
     else if (displayMode == DISP_PET) drawPet();
     else if (settings().hud) drawHUD();
+    if (displayMode == DISP_NORMAL && !blePasskey() && !clocking) drawStatusBar(characterPalette());
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();
     else if (menuOpen) drawMenu();
