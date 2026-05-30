@@ -2,25 +2,27 @@
 """
 Claude Code Usage Companion — pushes session/weekly token-% to the M5Stack buddy over BLE.
 
-The device firmware (Stage 1) already parses {"session_pct":N,"weekly_pct":M} and displays
-it in the status-bar center. This script reads ~/.claude/projects/**/*.jsonl, computes rolling
-5-hour and 7-day output-token windows, converts to %, and writes to the NUS RX characteristic.
+The device firmware parses {"session_pct":N,"weekly_pct":M} and shows S__% W__% in the
+status bar. This script reads ~/.claude/projects/**/*.jsonl, computes rolling 5h/7d
+output-token windows, and writes to the device over BLE every 20s.
 
-macOS Bluetooth restriction: Python scripts SIGABRT without NSBluetoothAlwaysUsageDescription.
-Run via `open UsageCompanion.app` instead of calling this script directly.
+── macOS Bluetooth permission ──────────────────────────────────────────────────────────
+Python scripts SIGABRT on macOS without Bluetooth permission. Fix once:
+  System Settings → Privacy & Security → Bluetooth → add your Terminal (or iTerm).
+After granting, run this script directly — no app bundle needed:
+  .venv/bin/python tools/usage_companion/usage_companion.py
 
-Usage:
-    SESSION_CAP=88000 WEEKLY_CAP=500000 .venv/bin/python usage_companion.py [--dry-run]
-    # Or via the app bundle (handles entitlement):
-    open tools/usage_companion/UsageCompanion.app
+── Firmware compatibility ───────────────────────────────────────────────────────────────
+  New firmware (after 2026-05-31): uses plaintext char 6e400004 — no pairing needed.
+  Old firmware: falls back to encrypted NUS RX 6e400002 (macOS uses stored bond LTK).
+The script auto-detects which one to use.
 
-Cap tuning:
-    SESSION_CAP  = output tokens allowed in a rolling 5-hour window  (default: 88000)
-    WEEKLY_CAP   = output tokens allowed in a rolling 7-day window   (default: 500000)
-    These are approximations for Claude Code Pro Max; adjust to match your plan's actual limits.
-    The displayed % is relative — green <70%, yellow 70-89%, red >=90%.
+── Cap tuning ───────────────────────────────────────────────────────────────────────────
+  SESSION_CAP  output tokens / 5h window  (default 88000, Claude Code Pro Max approx.)
+  WEEKLY_CAP   output tokens / 7d window  (default 500000)
+  SESSION_CAP=200000 WEEKLY_CAP=1000000 .venv/bin/python usage_companion.py
 
-Requires: bleak (pip install bleak)
+Requires: pip install bleak
 """
 
 import asyncio
@@ -28,33 +30,31 @@ import glob
 import json
 import os
 import sys
-import time
 from datetime import datetime, timezone, timedelta
 
 from bleak import BleakClient, BleakScanner
 
-# ── NUS service / characteristic UUIDs (same as firmware) ──────────────────────
+# ── NUS service / characteristic UUIDs ─────────────────────────────────────────
 NUS_SERVICE  = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-NUS_RX       = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # encrypted — requires bonding
-NUS_USAGE_RX = "6e400004-b5a3-f393-e0a9-e50e24dcca9e"  # plaintext — no bonding needed
+NUS_RX       = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # encrypted (old firmware + new)
+NUS_USAGE_RX = "6e400004-b5a3-f393-e0a9-e50e24dcca9e"  # plaintext (new firmware only)
 
-# ── Configurable caps (tune to your subscription plan) ─────────────────────────
+# ── Configurable caps ───────────────────────────────────────────────────────────
 SESSION_HOURS = 5
 WEEKLY_DAYS   = 7
-SESSION_CAP   = int(os.environ.get("SESSION_CAP", "88000"))   # output tokens / 5h
-WEEKLY_CAP    = int(os.environ.get("WEEKLY_CAP",  "500000"))  # output tokens / 7d
+SESSION_CAP   = int(os.environ.get("SESSION_CAP", "88000"))
+WEEKLY_CAP    = int(os.environ.get("WEEKLY_CAP",  "500000"))
 
 PUSH_INTERVAL = 20   # seconds between BLE writes
-BUDDY_PREFIX  = "claude"  # case-insensitive name prefix for the device
+BUDDY_PREFIX  = "claude"
 
 
 # ── Token accounting ────────────────────────────────────────────────────────────
 
 def _collect_tokens():
-    """Scan all ~/.claude/projects/**/*.jsonl and return list of (utc_ts, output_tokens)."""
-    pattern = os.path.expanduser("~/.claude/projects/**/*.jsonl")
+    """Scan all ~/.claude/projects/**/*.jsonl → list of (utc_datetime, output_tokens)."""
     records = []
-    for path in glob.glob(pattern, recursive=True):
+    for path in glob.glob(os.path.expanduser("~/.claude/projects/**/*.jsonl"), recursive=True):
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:
                 for line in fh:
@@ -90,75 +90,99 @@ def _collect_tokens():
 
 
 def compute_usage_pct() -> tuple[int, int]:
-    """Return (session_pct, weekly_pct) as integers 0-100."""
+    """Return (session_pct, weekly_pct) clamped to 0-100."""
     now = datetime.now(timezone.utc)
-    cutoff_session = now - timedelta(hours=SESSION_HOURS)
-    cutoff_weekly  = now - timedelta(days=WEEKLY_DAYS)
-
-    session_tokens = 0
-    weekly_tokens  = 0
-    for ts, out_tok in _collect_tokens():
-        if ts >= cutoff_session:
-            session_tokens += out_tok
-        if ts >= cutoff_weekly:
-            weekly_tokens += out_tok
-
-    session_pct = min(100, int(session_tokens * 100 / SESSION_CAP))
-    weekly_pct  = min(100, int(weekly_tokens  * 100 / WEEKLY_CAP))
-    return session_pct, weekly_pct
+    cutoff_5h  = now - timedelta(hours=SESSION_HOURS)
+    cutoff_7d  = now - timedelta(days=WEEKLY_DAYS)
+    s = w = 0
+    for ts, tok in _collect_tokens():
+        if ts >= cutoff_5h:
+            s += tok
+        if ts >= cutoff_7d:
+            w += tok
+    return min(100, int(s * 100 / SESSION_CAP)), min(100, int(w * 100 / WEEKLY_CAP))
 
 
-# ── BLE push loop ───────────────────────────────────────────────────────────────
+# ── BLE helpers ─────────────────────────────────────────────────────────────────
 
 async def find_buddy(timeout: float = 12.0) -> str | None:
-    """Scan for the first device whose name starts with 'Claude' (case-insensitive)."""
-    print(f"[companion] scanning {timeout:.0f}s for device name starting with '{BUDDY_PREFIX}' …")
+    print(f"[companion] scanning {timeout:.0f}s for 'Claude*' device …", flush=True)
     devices = await BleakScanner.discover(timeout=timeout, return_adv=True)
     for addr, (dev, adv) in devices.items():
         name = (adv.local_name or dev.name or "").lower()
         if name.startswith(BUDDY_PREFIX):
-            print(f"[companion] found: {adv.local_name or dev.name!r} at {addr}")
+            label = adv.local_name or dev.name
+            print(f"[companion] found: {label!r} at {addr}", flush=True)
             return addr
     return None
 
 
-async def push_loop(dry_run: bool = False):
+def _pick_write_char(client: BleakClient) -> str | None:
+    """Return the UUID to write usage data to, preferring the plaintext char."""
+    uuids = {str(c.uuid).lower() for s in client.services for c in s.characteristics}
+    if NUS_USAGE_RX in uuids:
+        return NUS_USAGE_RX   # new firmware — plaintext, no bonding needed
+    if NUS_RX in uuids:
+        return NUS_RX         # old firmware — macOS uses stored bond LTK automatically
+    return None
+
+
+async def push_loop():
     while True:
         addr = await find_buddy()
         if addr is None:
-            print("[companion] no buddy found — retrying in 30s")
+            print("[companion] no buddy found — retrying in 30s", flush=True)
             await asyncio.sleep(30)
             continue
 
-        print(f"[companion] connecting to {addr} …")
+        print(f"[companion] connecting to {addr} …", flush=True)
         try:
             async with BleakClient(addr, timeout=15.0) as client:
-                print(f"[companion] connected — pushing every {PUSH_INTERVAL}s  (Ctrl-C to stop)")
+                char_uuid = _pick_write_char(client)
+                if char_uuid is None:
+                    print("[companion] ERROR: NUS service not found on device. "
+                          "Is it the right device?", flush=True)
+                    await asyncio.sleep(10)
+                    continue
+                kind = "plaintext" if char_uuid == NUS_USAGE_RX else "encrypted (bond LTK)"
+                print(f"[companion] using char {char_uuid} ({kind})", flush=True)
+                print(f"[companion] connected — pushing every {PUSH_INTERVAL}s  "
+                      f"(Ctrl-C to stop)", flush=True)
+
                 while client.is_connected:
                     sp, wk = compute_usage_pct()
                     payload = json.dumps({"session_pct": sp, "weekly_pct": wk}) + "\n"
-                    print(f"[companion] → {payload.strip()}")
-                    if not dry_run:
+                    print(f"[companion] → {payload.strip()}", flush=True)
+                    try:
                         await client.write_gatt_char(
-                            NUS_USAGE_RX,
+                            char_uuid,
                             payload.encode("utf-8"),
                             response=False,
                         )
+                    except Exception as write_err:
+                        print(f"[companion] write failed: {write_err}", flush=True)
+                        if char_uuid == NUS_RX:
+                            print("[companion] hint: if this is a bonding error, "
+                                  "pair the device with Hardware Buddy first.", flush=True)
+                        break
                     await asyncio.sleep(PUSH_INTERVAL)
         except Exception as exc:
-            print(f"[companion] disconnected ({exc}) — reconnecting in 5s")
+            print(f"[companion] connection error ({exc}) — reconnecting in 5s", flush=True)
             await asyncio.sleep(5)
 
 
 def main():
-    dry_run = "--dry-run" in sys.argv
-    if dry_run:
-        print("[companion] DRY RUN — computing usage without BLE write")
+    if "--dry-run" in sys.argv:
+        print("[companion] DRY RUN — computing usage without BLE")
         sp, wk = compute_usage_pct()
-        print(f"[companion] session_pct={sp}  weekly_pct={wk}")
-        print(f"[companion] (SESSION_CAP={SESSION_CAP}, WEEKLY_CAP={WEEKLY_CAP})")
+        print(f"  session_pct = {sp}%  (5h window, cap={SESSION_CAP} tokens)")
+        print(f"  weekly_pct  = {wk}%  (7d window, cap={WEEKLY_CAP} tokens)")
+        print("Set SESSION_CAP / WEEKLY_CAP env vars to tune for your plan.")
         return
 
+    print(f"[companion] SESSION_CAP={SESSION_CAP}  WEEKLY_CAP={WEEKLY_CAP}")
+    print("[companion] If this SIGABRTs: System Settings → Privacy & Security → "
+          "Bluetooth → add your Terminal app.")
     try:
         asyncio.run(push_loop())
     except KeyboardInterrupt:
