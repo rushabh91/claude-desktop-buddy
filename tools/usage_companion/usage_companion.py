@@ -13,8 +13,8 @@ statusline and tools like claude-hud use), NOT from estimating token counts:
 local Claude Code credentials (macOS Keychain "Claude Code-credentials", or
 ~/.claude/.credentials.json) — exactly the credential Claude Code itself stores.
 
-The companion pushes {"session_pct":N,"weekly_pct":M} to the device every 20s; the firmware
-shows it as S__% W__% in the status bar.
+The companion polls the API and pushes {"session_pct":N,"weekly_pct":M} to the device every
+5 minutes (the API's refresh window); the firmware shows it as S__% W__% in the status bar.
 
 ── macOS Bluetooth + Keychain permissions ──────────────────────────────────────────────
   • Bluetooth: System Settings → Privacy & Security → Bluetooth → add your Terminal app.
@@ -47,7 +47,9 @@ USAGE_API_BETA   = "oauth-2025-04-20"
 USAGE_USER_AGENT = "claude-code/2.1"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 
-PUSH_INTERVAL = 20    # seconds between BLE writes
+# The usage API only refreshes ~every 5 min (its rate-limit window), so polling
+# faster just burns API calls for no new data. One push per 5 min is plenty.
+PUSH_INTERVAL = 300   # seconds between API polls + BLE writes
 TOKEN_TTL     = 240   # re-read the keychain token at most every 4 min
 BUDDY_PREFIX  = "claude"
 
@@ -230,7 +232,7 @@ async def push_loop():
                     continue
                 kind = "plaintext" if char_uuid == NUS_USAGE_RX else "encrypted (bond LTK)"
                 print(f"[companion] connected — char {char_uuid} ({kind}), "
-                      f"pushing every {PUSH_INTERVAL}s  (Ctrl-C to stop)", flush=True)
+                      f"pushing every {PUSH_INTERVAL // 60} min  (Ctrl-C to stop)", flush=True)
                 while client.is_connected:
                     s, w = compute_usage_pct()
                     # Send only the fields we actually have; firmware leaves the rest at -1.
@@ -249,7 +251,12 @@ async def push_loop():
                             break
                     else:
                         print("[companion] no usage data this cycle (skipping push)", flush=True)
-                    await asyncio.sleep(PUSH_INTERVAL)
+                    # Sleep in short slices so a dropped link is noticed within a few
+                    # seconds (and reconnects) rather than after the full 5-min interval.
+                    for _ in range(PUSH_INTERVAL // 5):
+                        if not client.is_connected:
+                            break
+                        await asyncio.sleep(5)
         except Exception as exc:
             print(f"[companion] connection error ({exc}) — reconnecting in 5s", flush=True)
             await asyncio.sleep(5)

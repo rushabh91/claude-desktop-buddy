@@ -1,7 +1,8 @@
 # Usage Companion
 
-Pushes **real** Claude Code usage percentages to the M5Stack Fire buddy over BLE every 20s.
-The device status bar shows `S__% W__%` (session / weekly) colored green/yellow/red.
+Pushes **real** Claude Code usage percentages to the M5Stack Fire buddy over BLE every 5 min
+(the API's refresh window). The device status bar shows `S__% W__%` (session / weekly)
+colored green/yellow/red.
 
 The numbers come from the **official Anthropic usage API** — the same source the Claude Code
 statusline and tools like [claude-hud](https://github.com/jarrodwatts/claude-hud) use:
@@ -36,7 +37,7 @@ python3 -m venv .venv
 # Verify the numbers first (no BLE, just prints real %):
 .venv/bin/python tools/usage_companion/usage_companion.py --dry-run
 
-# Then run for real (scans, connects, pushes every 20s):
+# Then run for real (scans, connects, pushes every 5 min):
 .venv/bin/python tools/usage_companion/usage_companion.py
 ```
 
@@ -54,7 +55,7 @@ The companion auto-detects which characteristic the device exposes.
 1. Reads the Claude Code OAuth token from the Keychain (or `.credentials.json`)
 2. `GET /api/oauth/usage` → `five_hour.utilization`, `seven_day.utilization`
 3. Connects to any BLE device named `Claude*`
-4. Writes `{"session_pct":N,"weekly_pct":M}\n` every 20s; reconnects on drop
+4. Writes `{"session_pct":N,"weekly_pct":M}\n` every 5 min; reconnects on drop
 5. Re-reads the token if the API returns 401 (Claude Code refreshes it periodically)
 
 ## Troubleshooting
