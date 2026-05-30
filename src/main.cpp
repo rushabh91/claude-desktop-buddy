@@ -26,10 +26,11 @@ static void startBt() {
 
 #include "character.h"
 #include "stats.h"
+#include "leds.h"
+#include "melody.h"
 const int W = 135, H = 240;
 const int CX = W / 2;
 const int CY_BASE = 120;
-const int LED_PIN = 10;          // red LED, active-low
 
 // Where the 135x240 portrait sprite lands on the Fire's larger panel. Computed
 // in setup() once the rotation is set; centers the stick-sized UI.
@@ -58,6 +59,13 @@ bool    btnALong    = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
 uint8_t displayMode = DISP_NORMAL;
+
+// Dedicated breathing-exercise mode (entered with BtnC from the home screen).
+// Takes over the screen + LED bar, paces a chosen pattern, ignores screen
+// sleep. BtnB cycles patterns; BtnA/BtnC exit.
+bool     breathOpen    = false;
+uint32_t breathStartMs = 0;
+bool     breathDirty   = false;   // force a full repaint (on entry / pattern change)
 uint8_t infoPage = 0;
 uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
@@ -69,6 +77,7 @@ bool     dimmed = false;
 bool     screenOff = false;
 bool     swallowBtnA = false;
 bool     swallowBtnB = false;
+bool     swallowBtnC = false;
 bool     buddyMode = false;
 bool     gifAvailable = false;
 const uint8_t SPECIES_GIF = 0xFF;   // species NVS sentinel: use the installed GIF
@@ -367,8 +376,7 @@ static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
   _onUsb = Axp.GetVBusVoltage() > 4.0f;
-  Rtc.GetTime(&_clkTm);
-  Rtc.GetDate(&_clkDt);
+  dataClockNow(&_clkTm, &_clkDt);   // millis()-based software clock (Fire has no RTC)
 }
 
 static void clockUpdateOrient() {
@@ -635,6 +643,8 @@ void drawInfo() {
     uint32_t up = millis() / 1000;
     ln("  uptime   %luh %02lum", up / 3600, (up / 60) % 60);
     ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
+    ln("  iram     %uKB", (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+    ln("  psram    %uKB", (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     ln("  bright   %u/4", brightLevel);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
     ln("  temp     %dC", (int)Axp.GetTempInAXP192());
@@ -945,6 +955,72 @@ void drawHUD() {
   }
 }
 
+// Dedicated breathing-exercise screen, drawn direct to the LCD (full 320x240).
+// The disc grows on inhale, holds full (white), shrinks on exhale, rests dark —
+// synced to the LED bar via the shared breath clock. Text repaints only on
+// change and the disc only when it moves, so it stays flicker-free without a
+// full-screen backbuffer.
+static void drawBreath(uint32_t now) {
+  const Palette& p = characterPalette();
+  const int cx = 160, cy = 120, minR = 16, maxR = 82;
+  const uint16_t MOVE = 0x051F, HOLD = 0xFFFF, EMPTY = 0x2104;  // blue / white / dim
+
+  uint32_t bt = ledsBreathClock(now);
+  BreathPhase ph; uint8_t secs; const char* label;
+  uint8_t lvl = ledsBreathInfo(bt, &ph, &secs, &label);
+  uint16_t radius = minR + (uint16_t)((uint32_t)(maxR - minR) * lvl / 255);
+  uint16_t color  = (ph == BR_HOLD_FULL) ? HOLD : (ph == BR_HOLD_EMPTY) ? EMPTY : MOVE;
+  uint32_t cyc    = ledsBreathCycleMs();
+  uint16_t cycleNum = cyc ? (uint16_t)(bt / cyc) + 1 : 1;
+
+  static uint16_t lastRadius = 0, lastColor = 0, lastCycle = 0xFFFF;
+  static uint8_t  lastSecs = 0xFF;
+  static BreathPhase lastPhase = (BreathPhase)0xFF;
+
+  if (breathDirty) {
+    M5.Lcd.fillScreen(p.bg);
+    M5.Lcd.setTextDatum(TL_DATUM);
+    M5.Lcd.setTextColor(p.textDim, p.bg);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.drawString(ledsBreathName(), 6, 6);
+    lastRadius = 0; lastColor = 0; lastCycle = 0xFFFF; lastSecs = 0xFF;
+    lastPhase = (BreathPhase)0xFF;
+    breathDirty = false;
+  }
+
+  // Disc: repaint only when it moves or changes color (steady during holds).
+  if (radius != lastRadius || color != lastColor) {
+    M5.Lcd.fillCircle(cx, cy, radius, color);
+    if (radius < lastRadius) M5.Lcd.fillArc(cx, cy, radius, lastRadius, 0, 360, p.bg);
+    lastRadius = radius; lastColor = color;
+  }
+
+  // Phase word + per-phase countdown, below the disc; repaint on change.
+  if (ph != lastPhase || secs != lastSecs) {
+    M5.Lcd.fillRect(0, 208, 320, 32, p.bg);
+    M5.Lcd.setTextDatum(TC_DATUM);
+    M5.Lcd.setTextColor(p.text, p.bg);
+    M5.Lcd.setTextSize(3);
+    char line[24]; snprintf(line, sizeof(line), "%s %u", label, secs);
+    M5.Lcd.drawString(line, cx, 210);
+    lastPhase = ph; lastSecs = secs;
+  }
+
+  // Cycle counter, top-right; repaint on change.
+  if (cycleNum != lastCycle) {
+    M5.Lcd.fillRect(232, 0, 88, 22, p.bg);
+    M5.Lcd.setTextDatum(TR_DATUM);
+    M5.Lcd.setTextColor(p.textDim, p.bg);
+    M5.Lcd.setTextSize(2);
+    char c[16]; snprintf(c, sizeof(c), "cycle %u", cycleNum);
+    M5.Lcd.drawString(c, 314, 6);
+    lastCycle = cycleNum;
+  }
+
+  M5.Lcd.setTextDatum(TL_DATUM);
+  M5.Lcd.setTextSize(1);
+}
+
 void setup() {
   // The Fire's 4MB PSRAM is added to the heap but is unreliable on this SDK
   // build: allocations >4KB (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096) land in
@@ -965,8 +1041,7 @@ void setup() {
   M5.Imu.begin();
   Beep.begin();
   startBt();
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);   // off
+  ledsInit();   // SK6812 bar on GPIO15 → driven black now, killing the white glow
   applyBrightness();
   lastInteractMs = millis();
   statsLoad();
@@ -974,12 +1049,14 @@ void setup() {
   petNameLoad();
   buddyInit();
 
-  // M5Canvas defaults sprites to PSRAM; keep this 64KB sprite in internal RAM
-  // (the M5StickC Plus had no PSRAM at all), avoiding the unreliable PSRAM.
+  // PSRAM as a framebuffer is unstable on this board: a full-screen sprite in
+  // PSRAM boot-loops with BLE active (Phase 0 spike confirmed it — the CPU
+  // reading the framebuffer out of PSRAM each frame, concurrent with the BLE
+  // radio, trips the ESP32 PSRAM cache hazard and corrupts the heap). Keep the
+  // sprite in internal RAM. The landscape redesign uses Architecture B: a
+  // 320x140 buddy sprite in internal RAM + direct-to-LCD for static screens.
   spr.setPsram(false);
   spr.createSprite(W, H);
-  // Center the 135x240 sprite on the Fire's panel (the stick's screen was
-  // exactly 135x240, so it pushed at 0,0).
   spritePushX = (M5.Lcd.width()  - W) / 2; if (spritePushX < 0) spritePushX = 0;
   spritePushY = (M5.Lcd.height() - H) / 2; if (spritePushY < 0) spritePushY = 0;
   characterInit(nullptr);  // scan /characters/ for whatever is installed
@@ -1020,9 +1097,18 @@ void loop() {
   Beep.update();
   t++;
   uint32_t now = millis();
+  melodyTick(now);
 
   dataPoll(&tama);
-  if (statsPollLevelUp()) triggerOneShot(P_CELEBRATE, 3000);
+
+  // BLE link edge → connect / disconnect jingle.
+  static bool prevConn = false;
+  bool nowConn = bleConnected();
+  if (nowConn && !prevConn)      PLAY_MELODY(MEL_CONNECT);
+  else if (!nowConn && prevConn) PLAY_MELODY(MEL_DISCONNECT);
+  prevConn = nowConn;
+
+  if (statsPollLevelUp()) { PLAY_MELODY(MEL_LEVELUP); triggerOneShot(P_CELEBRATE, 3000); }
   baseState = derive(tama);
 
   // After waking the screen, hold sleep for 12s so users see the wake-up
@@ -1031,12 +1117,15 @@ void loop() {
 
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
 
-  // LED: pulse on attention, otherwise off
-  if (activeState == P_ATTENTION && settings().led) {
-    digitalWrite(LED_PIN, (now / 400) % 2 ? LOW : HIGH);
-  } else {
-    digitalWrite(LED_PIN, HIGH);
-  }
+  // RGB LED bar. In breathing mode it paces the breath (synced to the on-screen
+  // guide); otherwise it mirrors the persona as an ambient status light — off
+  // when the screen is off or the buddy is napping so it doesn't glow on a dark
+  // or sleeping desk.
+  ledsForceBreath(breathOpen, breathStartMs);
+  ledsSetState(activeState,
+               settings().led && (breathOpen || (!screenOff && !napping)),
+               brightLevel);
+  ledsTick(now);
 
   // shake → dizzy + force scenario advance
   if (now - lastShakeCheck > 50) {
@@ -1057,11 +1146,13 @@ void loop() {
     if (tama.promptId[0]) {
       promptArrivedMs = millis();
       wake();
-      beep(1200, 80);   // alert chirp
+      PLAY_MELODY(MEL_ALERT);   // approval-arrived alert
       // Jump to the approval screen no matter what was open — drawApproval
       // only runs from drawHUD which only runs in DISP_NORMAL.
       displayMode = DISP_NORMAL;
       menuOpen = settingsOpen = resetOpen = false;
+      // A prompt takes priority over a breathing session so it's never missed.
+      if (breathOpen) { breathOpen = false; M5.Lcd.fillScreen(characterPalette().bg); }
       applyDisplayMode();
       characterInvalidate();
       if (buddyMode) buddyInvalidate();
@@ -1073,10 +1164,11 @@ void loop() {
   // Button-press wake. Track which button woke the screen so its full
   // press cycle (including long-press) is swallowed — you don't want
   // BtnA-to-wake to also cycle displayMode or open the menu.
-  if (M5.BtnA.isPressed() || M5.BtnB.isPressed()) {
+  if (M5.BtnA.isPressed() || M5.BtnB.isPressed() || M5.BtnC.isPressed()) {
     if (screenOff) {
       if (M5.BtnA.isPressed()) swallowBtnA = true;
       if (M5.BtnB.isPressed()) swallowBtnB = true;
+      if (M5.BtnC.isPressed()) swallowBtnC = true;
     }
     wake();
   }
@@ -1092,6 +1184,23 @@ void loop() {
     }
   }
 
+  if (breathOpen) {
+    // Breathing mode owns the buttons: A or C exits, B cycles the pattern.
+    if ((M5.BtnA.wasReleased() && !swallowBtnA) || (M5.BtnC.wasPressed() && !swallowBtnC)) {
+      breathOpen = false;
+      beep(700, 40);
+      M5.Lcd.fillScreen(characterPalette().bg);
+      characterInvalidate();
+      if (buddyMode) buddyInvalidate();
+      applyDisplayMode();
+    } else if (M5.BtnB.wasPressed() && !swallowBtnB) {
+      ledsSetBreath((ledsBreathIdx() + 1) % BREATH_COUNT);
+      breathStartMs = now;        // restart the cycle on the new pattern
+      breathDirty = true;
+      beep(1500, 40);
+    }
+    swallowBtnA = swallowBtnB = swallowBtnC = false;
+  } else {
   if (M5.BtnA.pressedFor(600) && !btnALong && !swallowBtnA) {
     btnALong = true;
     beep(800, 60);
@@ -1113,7 +1222,8 @@ void loop() {
         responseSent = true;
         uint32_t tookS = (millis() - promptArrivedMs) / 1000;
         statsOnApproval(tookS);
-        beep(2400, 60);
+        PLAY_MELODY(MEL_APPROVE);
+        ledsFlashApprove();
         if (tookS < 5) triggerOneShot(P_HEART, 2000);
       } else if (resetOpen) {
         beep(1800, 30);
@@ -1145,7 +1255,8 @@ void loop() {
       sendCmd(cmd);
       responseSent = true;
       statsOnDenial();
-      beep(600, 60);
+      PLAY_MELODY(MEL_DENY);
+      ledsFlashDeny();
     } else if (resetOpen) {
       beep(2400, 30);
       applyReset(resetSel);
@@ -1167,6 +1278,17 @@ void loop() {
       msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
     }
   }
+
+  // BtnC on the home screen → enter the breathing-exercise mode.
+  if (M5.BtnC.wasPressed()) {
+    if (swallowBtnC) { swallowBtnC = false; }
+    else if (!menuOpen && !settingsOpen && !resetOpen && !inPrompt
+             && displayMode == DISP_NORMAL) {
+      breathOpen = true; breathStartMs = now; breathDirty = true;
+      beep(1500, 60);
+    }
+  }
+  }  // end !breathOpen button handling
 
   // blink bookkeeping
 
@@ -1215,6 +1337,9 @@ void loop() {
   if (pk && !lastPasskey) { wake(); beep(1800, 60); }
   lastPasskey = pk;
 
+  if (breathOpen) {
+    drawBreath(now);
+  } else {
   if (napping || screenOff || landscapeClock) {
     // skip sprite render — face-down, powered off, or landscape clock
     // (which draws direct-to-LCD below)
@@ -1258,13 +1383,14 @@ void loop() {
     else if (menuOpen) drawMenu();
     spr.pushSprite(spritePushX, spritePushY);
   }
+  }  // end else (!breathOpen)
 
   // Face-down nap: dim immediately, pause animations, accumulate sleep time.
   // Skipped during approval — you're holding it to read, not sleeping it.
   // Exit needs sustained not-down so IMU noise at the threshold doesn't
   // bounce brightness between 8 and full every few frames.
   static int8_t faceDownFrames = 0;
-  if (!inPrompt) {
+  if (!inPrompt && !breathOpen) {
     bool down = isFaceDown();
     if (down)       { if (faceDownFrames < 20) faceDownFrames++; }
     else            { if (faceDownFrames > -10) faceDownFrames--; }
@@ -1285,7 +1411,7 @@ void loop() {
   // millis() not the cached `now`: wake() runs after `now` is captured,
   // so now - lastInteractMs underflows when a button is held → flicker.
   // No auto-off on USB power — clock face wants to stay visible while charging.
-  if (!screenOff && !inPrompt && !_onUsb
+  if (!screenOff && !inPrompt && !_onUsb && !breathOpen
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
     Axp.SetLDO2(false);
     screenOff = true;

@@ -62,10 +62,26 @@ inline const char* dataScenarioName() {
   return "none";
 }
 
-// Set true once the bridge sends a time sync — until then the RTC may
-// hold whatever was on the coin cell (or 2000-01-01 if it lost power).
-static bool _rtcValid = false;
+// Millis()-based software clock, seeded by the bridge's {"time":[epoch,tz]}
+// sync. The Fire has no RTC and the shim's Rtc only round-trips values in RAM
+// (it never advances), so we extrapolate local time from the sync point. The
+// bridge re-sends time every heartbeat (~10s), so drift never accumulates.
+static bool     _rtcValid       = false;
+static time_t   _clkLocalAtSync = 0;   // local epoch (UTC + tz) at last sync
+static uint32_t _clkSyncMillis  = 0;   // millis() captured at last sync
 inline bool dataRtcValid() { return _rtcValid; }
+
+// Fill tm/dt with the current local time from the software clock. Returns
+// false (leaving them untouched) until the first sync arrives.
+inline bool dataClockNow(RTC_TimeTypeDef* tm, RTC_DateTypeDef* dt) {
+  if (!_rtcValid) return false;
+  time_t local = _clkLocalAtSync + (time_t)((millis() - _clkSyncMillis) / 1000);
+  struct tm lt; gmtime_r(&local, &lt);
+  tm->Hours = lt.tm_hour; tm->Minutes = lt.tm_min; tm->Seconds = lt.tm_sec;
+  dt->WeekDay = lt.tm_wday; dt->Month = lt.tm_mon + 1;
+  dt->Date = lt.tm_mday;   dt->Year  = lt.tm_year + 1900;
+  return true;
+}
 
 static void _applyJson(const char* line, TamaState* out) {
   JsonDocument doc;
@@ -76,15 +92,12 @@ static void _applyJson(const char* line, TamaState* out) {
   // adjusted epoch yields local components including weekday.
   JsonArray t = doc["time"];
   if (!t.isNull() && t.size() == 2) {
-    time_t local = (time_t)t[0].as<uint32_t>() + (int32_t)t[1];
-    struct tm lt; gmtime_r(&local, &lt);
-    RTC_TimeTypeDef tm = { (uint8_t)lt.tm_hour, (uint8_t)lt.tm_min, (uint8_t)lt.tm_sec };
-    RTC_DateTypeDef dt = { (uint8_t)lt.tm_wday, (uint8_t)(lt.tm_mon + 1),
-                           (uint8_t)lt.tm_mday, (uint16_t)(lt.tm_year + 1900) };
-    Rtc.SetTime(&tm);
-    Rtc.SetDate(&dt);
+    // Seed the software clock: store the local epoch and the millis() at sync.
+    // dataClockNow() extrapolates forward from here.
+    _clkLocalAtSync = (time_t)t[0].as<uint32_t>() + (int32_t)t[1];
+    _clkSyncMillis  = millis();
     extern uint32_t _clkLastRead;
-    _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
+    _clkLastRead = 0;   // force an immediate clock refresh in main
     _rtcValid = true;
     _lastLiveMs = millis();
     return;

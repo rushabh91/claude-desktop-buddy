@@ -28,6 +28,8 @@
 // references — a blanket `using namespace m5gfx;` would also drag lgfx::delay()
 // into global scope and make Arduino's delay() calls ambiguous.
 using lgfx::v1::TL_DATUM;
+using lgfx::v1::TC_DATUM;
+using lgfx::v1::TR_DATUM;
 using lgfx::v1::MC_DATUM;
 
 // Old TFT_eSPI type names -> LovyanGFX equivalents:
