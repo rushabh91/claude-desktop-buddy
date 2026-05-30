@@ -155,11 +155,9 @@ inline void ledsTick(uint32_t now) {
     case LP_IDLE:                                 // idle: bar off (breathing lives only in breathing mode)
       fill_solid(_leds, LEDS_COUNT, CRGB::Black);
       break;
-    case LP_BUSY: {                               // blue comet with fading tail
-      fadeToBlackBy(_leds, LEDS_COUNT, 60);
-      _leds[(now / 80) % LEDS_COUNT] = CRGB::Blue;
+    case LP_BUSY:                                 // bar off while busy (the screen shows it)
+      fill_solid(_leds, LEDS_COUNT, CRGB::Black);
       break;
-    }
     case LP_ATTENTION: {                          // amber 2Hz pulse — pending approval
       bool hi = (now / 250) % 2;
       fill_solid(_leds, LEDS_COUNT, hi ? CRGB(255, 120, 0) : CRGB(40, 18, 0));
