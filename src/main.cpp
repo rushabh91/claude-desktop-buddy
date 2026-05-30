@@ -73,7 +73,12 @@ uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
 uint8_t msgScroll = 0;
 uint16_t lastLineGen = 0;
-char     lastPromptId[40] = "";
+// Prompt identity is tracked by CONTENT (tool+hint), not prompt.id: the
+// companion regenerates the id every heartbeat for mirrored AskUserQuestion
+// prompts, so an id-keyed edge re-fired the alert and reset the dismiss on
+// every beat.
+char     lastPromptTool[20] = "";
+char     lastPromptHint[96] = "";
 uint32_t lastInteractMs = 0;
 bool     dimmed = false;
 bool     screenOff = false;
@@ -149,9 +154,8 @@ static void wake() {
   if (dimmed) { applyBrightness(); dimmed = false; }
 }
 bool     responseSent = false;
-bool     promptDismissed = false;    // B snoozes the panel for a few seconds
+bool     promptDismissed = false;    // B hides the panel until the question changes/clears
 bool     promptTimedOut = false;     // true after PROMPT_TIMEOUT_MS with no response
-uint32_t dismissedUntil = 0;
 bool     promptPanelUp = false;      // approval panel on screen (awaiting or "sent...")
 
 static void beep(uint16_t freq, uint16_t dur) {
@@ -1288,11 +1292,17 @@ void loop() {
     }
   }
 
-  // BtnA: step through fake scenarios
-  // Prompt arrival: beep, reset response flag
-  if (strcmp(tama.promptId, lastPromptId) != 0) {
-    strncpy(lastPromptId, tama.promptId, sizeof(lastPromptId)-1);
-    lastPromptId[sizeof(lastPromptId)-1] = 0;
+  // New question = the tool/hint content changed (or cleared). Keyed on
+  // content, not prompt.id, so the companion's per-heartbeat id churn doesn't
+  // look like a fresh prompt. A genuinely new/changed question (or the prompt
+  // clearing) resets the dismiss; an unchanged question stays dismissed.
+  bool questionChanged = strcmp(tama.promptTool, lastPromptTool) != 0
+                      || strcmp(tama.promptHint, lastPromptHint) != 0;
+  if (questionChanged) {
+    strncpy(lastPromptTool, tama.promptTool, sizeof(lastPromptTool)-1);
+    lastPromptTool[sizeof(lastPromptTool)-1] = 0;
+    strncpy(lastPromptHint, tama.promptHint, sizeof(lastPromptHint)-1);
+    lastPromptHint[sizeof(lastPromptHint)-1] = 0;
     responseSent = false;
     promptDismissed = false;
     promptTimedOut = false;
@@ -1316,8 +1326,8 @@ void loop() {
     }
   }
 
-  // A dismissed prompt re-appears after a short snooze (if still pending).
-  if (promptDismissed && (int32_t)(now - dismissedUntil) >= 0) promptDismissed = false;
+  // Dismiss is sticky: it persists until the question's content changes or
+  // clears (handled by the content edge check above) — no time-based re-show.
   // Auto-dismiss after 5 minutes so a crashed bridge never leaves the panel stuck.
   if (!tama.promptId[0]) promptTimedOut = false;
   if (tama.promptId[0] && !responseSent && !promptTimedOut &&
@@ -1397,7 +1407,7 @@ void loop() {
           ledsFlashApprove();
           if (tookS < 5) triggerOneShot(P_HEART, 2000);
         } else {
-          promptDismissed = true; dismissedUntil = now + 8000;   // clear "sent..."
+          promptDismissed = true;   // hide the "sent..." panel
         }
       } else if (resetOpen) {
         beep(1800, 30);
@@ -1424,9 +1434,9 @@ void loop() {
     if (swallowBtnB) { swallowBtnB = false; }
     else
     if (promptShown) {
-      // Dismiss: hide the panel without deciding; it re-shows after a snooze.
+      // Dismiss: hide the panel without deciding. Stays hidden until the
+      // question changes or clears (sticky — see the content edge check).
       promptDismissed = true;
-      dismissedUntil = now + 8000;
       beep(900, 40);
     } else if (resetOpen) {
       beep(2400, 30);
@@ -1463,7 +1473,7 @@ void loop() {
         PLAY_MELODY(MEL_DENY);
         ledsFlashDeny();
       } else {
-        promptDismissed = true; dismissedUntil = now + 8000;   // clear "sent..."
+        promptDismissed = true;   // hide the "sent..." panel
       }
     } else if (resetOpen) {
       beep(1800, 30);
