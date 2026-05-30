@@ -105,6 +105,7 @@ const uint32_t SCREEN_OFF_MS = 30000;
 bool     napping = false;
 uint32_t napStartMs = 0;
 uint32_t promptArrivedMs = 0;
+static const uint32_t PROMPT_TIMEOUT_MS = 300000;  // 5 minutes
 
 // Face-down = Z-axis dominant and negative. Debounced so a toss doesn't count.
 static bool isFaceDown() {
@@ -113,7 +114,11 @@ static bool isFaceDown() {
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { Axp.ScreenBreath(20 + brightLevel * 20); }
+static void applyBrightness() {
+  int b = 20 + brightLevel * 20;
+  if (settings().dnd) { b /= 2; if (b < 10) b = 10; }   // DND dims for focus
+  Axp.ScreenBreath(b);
+}
 
 static void wake() {
   lastInteractMs = millis();
@@ -127,11 +132,12 @@ static void wake() {
 }
 bool     responseSent = false;
 bool     promptDismissed = false;    // B snoozes the panel for a few seconds
+bool     promptTimedOut = false;     // true after PROMPT_TIMEOUT_MS with no response
 uint32_t dismissedUntil = 0;
 bool     promptPanelUp = false;      // approval panel on screen (awaiting or "sent...")
 
 static void beep(uint16_t freq, uint16_t dur) {
-  if (settings().sound) Beep.tone(freq, dur);
+  if (settings().sound && !settings().dnd) Beep.tone(freq, dur);
 }
 
 static void sendCmd(const char* json) {
@@ -161,8 +167,8 @@ const uint8_t MENU_N = 6;
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
-const char* settingsItems[] = { "brightness", "sound", "bluetooth", "wifi", "led", "transcript", "clock rot", "ascii pet", "reset", "back" };
-const uint8_t SETTINGS_N = 10;
+const char* settingsItems[] = { "brightness", "sound", "bluetooth", "wifi", "led", "do not disturb", "transcript", "clock rot", "ascii pet", "reset", "back" };
+const uint8_t SETTINGS_N = 11;
 
 bool    resetOpen = false;
 uint8_t resetSel  = 0;
@@ -176,8 +182,9 @@ static void applySetting(uint8_t idx) {
   switch (idx) {
     case 0:
       brightLevel = (brightLevel + 1) % 5;
+      settings().bright = brightLevel;
       applyBrightness();
-      return;
+      break;
     case 1: s.sound = !s.sound; break;
     case 2:
       // BT toggle is a stored preference only — BLE stays live. Turning
@@ -188,11 +195,12 @@ static void applySetting(uint8_t idx) {
       break;
     case 3: s.wifi = !s.wifi; break;   // stored only — no WiFi stack linked
     case 4: s.led = !s.led; break;
-    case 5: s.hud = !s.hud; break;
-    case 6: s.clockRot = (s.clockRot + 1) % 3; break;
-    case 7: nextPet(); return;
-    case 8: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
-    case 9: settingsOpen = false; characterInvalidate(); return;
+    case 5: s.dnd = !s.dnd; applyBrightness(); break;   // DND also dims the screen
+    case 6: s.hud = !s.hud; break;
+    case 7: s.clockRot = (s.clockRot + 1) % 3; break;
+    case 8: nextPet(); return;
+    case 9: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
+    case 10: settingsOpen = false; characterInvalidate(); return;
   }
   settingsSave();
 }
@@ -280,7 +288,7 @@ static void drawSettings() {
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
   spr.setTextSize(1);
   Settings& s = settings();
-  bool vals[] = { s.sound, s.bt, s.wifi, s.led, s.hud };
+  bool vals[] = { s.sound, s.bt, s.wifi, s.led, s.dnd, s.hud };
   for (int i = 0; i < SETTINGS_N; i++) {
     bool sel = (i == settingsSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
@@ -291,13 +299,13 @@ static void drawSettings() {
     spr.setTextColor(p.textDim, PANEL);
     if (i == 0) {
       spr.printf("%u/4", brightLevel);
-    } else if (i >= 1 && i <= 5) {
+    } else if (i >= 1 && i <= 6) {
       spr.setTextColor(vals[i-1] ? GREEN : p.textDim, PANEL);
       spr.print(vals[i-1] ? " on" : "off");
-    } else if (i == 6) {
+    } else if (i == 7) {
       static const char* const RN[] = { "auto", "port", "land" };
       spr.print(RN[s.clockRot]);
-    } else if (i == 7) {
+    } else if (i == 8) {
       uint8_t total = buddySpeciesCount() + (gifAvailable ? 1 : 0);
       uint8_t pos   = buddyMode ? buddySpeciesIdx() + 1 : total;
       spr.printf("%u/%u", pos, total);
@@ -745,12 +753,16 @@ static void drawApproval() {
   spr.fillRect(0, top, W, AREA, p.bg);
   spr.drawFastHLine(0, top, W, p.textDim);
 
-  // Header: "approve?" + elapsed seconds (turns hot after 10s).
+  // Header: "approve?" + remaining time countdown (red when < 30s).
   spr.setTextSize(1);
-  uint32_t waited = (millis() - promptArrivedMs) / 1000;
-  spr.setTextColor(waited >= 10 ? HOT : p.textDim, p.bg);
+  uint32_t elapsed = millis() - promptArrivedMs;
+  uint32_t remaining = elapsed < PROMPT_TIMEOUT_MS ? (PROMPT_TIMEOUT_MS - elapsed) / 1000 : 0;
+  spr.setTextColor(remaining < 30 ? HOT : p.textDim, p.bg);
   spr.setCursor(6, top + 5);
-  spr.printf("approve?  %lus", (unsigned long)waited);
+  if (remaining >= 60)
+    spr.printf("approve?  ~%lum", (unsigned long)((remaining + 59) / 60));
+  else
+    spr.printf("approve?  %lus", (unsigned long)remaining);
 
   // Tool name, large (fits at size 2 across the wide screen).
   int toolLen = strlen(tama.promptTool);
@@ -916,7 +928,7 @@ void drawHUD() {
   spr.fillRect(0, H - AREA, W, AREA, p.bg);
   spr.setTextSize(1);
 
-  if (tama.lineGen != lastLineGen) { msgScroll = 0; lastLineGen = tama.lineGen; wake(); }
+  if (tama.lineGen != lastLineGen) { lastLineGen = tama.lineGen; wake(); }
 
   if (tama.nLines == 0) {
     spr.setTextColor(p.text, p.bg);
@@ -953,6 +965,11 @@ void drawHUD() {
     spr.setTextColor(p.body, p.bg);
     spr.setCursor(W - 18, H - LH - 2);
     spr.printf("-%u", msgScroll);
+  } else if (tama.connected) {
+    const char* badge = dataBtActive() ? "BT" : "USB";
+    spr.setTextColor(p.textDim, p.bg);
+    spr.setCursor(W - (int)strlen(badge) * 6, H - LH - 2);
+    spr.print(badge);
   }
 }
 
@@ -1001,6 +1018,12 @@ static void drawStatusBar(const Palette& p) {
     spr.setTextColor(bcol, p.bg);
     spr.setCursor(bx + 28, by + 2);
     spr.printf("%d%%", lvl);
+  }
+
+  // Do-not-disturb crescent moon (left of the battery) when active.
+  if (settings().dnd) {
+    spr.fillCircle(172, 11, 6, 0xFFE0);       // soft yellow disc
+    spr.fillCircle(176, 9, 6, p.bg);          // carve the crescent
   }
 
   // Clock (rightmost), from the millis()-seeded software clock.
@@ -1108,6 +1131,8 @@ void setup() {
   lastInteractMs = millis();
   statsLoad();
   settingsLoad();
+  brightLevel = settings().bright;
+  applyBrightness();   // re-apply now that settings (incl. DND dim and brightness) are loaded
   petNameLoad();
   buddyInit();
 
@@ -1179,15 +1204,35 @@ void loop() {
 
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
 
+  // Celebrate chime: ascending two-note ta-da on state entry, once per window.
+  // Edge-triggered so it doesn't re-fire every loop tick during the celebrate state.
+  // Routes through beep() so settings().sound gates both notes.
+  static PersonaState prevActiveForChime = P_SLEEP;
+  static uint32_t chimeNote2At = 0;
+  if (activeState == P_CELEBRATE && prevActiveForChime != P_CELEBRATE)
+    { beep(2000, 100); chimeNote2At = now + 130; }
+  if (chimeNote2At && (int32_t)(now - chimeNote2At) >= 0)
+    { beep(2800, 150); chimeNote2At = 0; }
+  prevActiveForChime = activeState;
+
   // RGB LED bar. In breathing mode it paces the breath (synced to the on-screen
   // guide); otherwise it mirrors the persona as an ambient status light — off
-  // when the screen is off or the buddy is napping so it doesn't glow on a dark
-  // or sleeping desk.
+  // when the screen is off, napping, or in do-not-disturb. Breathing is user-
+  // initiated focus, so it stays lit even in DND.
   ledsForceBreath(breathOpen, breathStartMs);
   ledsSetState(activeState,
-               settings().led && (breathOpen || (!screenOff && !napping)),
+               settings().led && (breathOpen || (!settings().dnd && !screenOff && !napping)),
                brightLevel);
   ledsTick(now);
+
+  // Low-battery warning on the bar (coarse IP5306 level; ledsTick's enable gate
+  // already respects led/DND). Polled occasionally — getBatteryLevel is I2C.
+  static uint32_t lastBattChk = 0;
+  if (now - lastBattChk > 10000) {
+    lastBattChk = now;
+    int blvl = M5.Power.getBatteryLevel();
+    ledsLowBattery(blvl >= 0 && blvl <= 25 && !M5.Power.isCharging());
+  }
 
   // shake → dizzy + force scenario advance
   if (now - lastShakeCheck > 50) {
@@ -1206,6 +1251,7 @@ void loop() {
     lastPromptId[sizeof(lastPromptId)-1] = 0;
     responseSent = false;
     promptDismissed = false;
+    promptTimedOut = false;
     if (tama.promptId[0]) {
       promptArrivedMs = millis();
       wake();
@@ -1227,8 +1273,13 @@ void loop() {
 
   // A dismissed prompt re-appears after a short snooze (if still pending).
   if (promptDismissed && (int32_t)(now - dismissedUntil) >= 0) promptDismissed = false;
-  bool inPrompt = tama.promptId[0] && !responseSent && !promptDismissed;
-  promptPanelUp = tama.promptId[0] && !promptDismissed;
+  // Auto-dismiss after 5 minutes so a crashed bridge never leaves the panel stuck.
+  if (!tama.promptId[0]) promptTimedOut = false;
+  if (tama.promptId[0] && !responseSent && !promptTimedOut &&
+      (int32_t)(now - promptArrivedMs) >= (int32_t)PROMPT_TIMEOUT_MS)
+    promptTimedOut = true;
+  bool inPrompt = tama.promptId[0] && !responseSent && !promptDismissed && !promptTimedOut;
+  promptPanelUp = tama.promptId[0] && !promptDismissed && !promptTimedOut;
   // A/B/C only act on the prompt when its panel is actually visible (home).
   // On Info/Pet, the buttons keep their navigation roles (C = back to home,
   // which reveals the prompt) so you never decline something you can't see.

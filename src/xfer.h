@@ -192,7 +192,9 @@ inline bool xferCommand(JsonDocument& doc) {
     _xExpected = doc["size"] | 0;
     _xWritten = 0;
     if (!path) { _xAck("file", false); return true; }
-    char full[80]; snprintf(full, sizeof(full), "/characters/%s/%s", _xCharName, path);
+    char full[80];
+    int pw = snprintf(full, sizeof(full), "/characters/%s/%s", _xCharName, path);
+    if (pw < 0 || pw >= (int)sizeof(full)) { _xAck("file", false); return true; }
     _xFile = LittleFS.open(full, "w");
     _xAck("file", (bool)_xFile);
     return true;

@@ -13,8 +13,8 @@ static const uint32_t TOKENS_PER_LEVEL = 50000;
 
 struct Stats {
   uint32_t napSeconds;       // cumulative face-down time
-  uint16_t approvals;
-  uint16_t denials;
+  uint32_t approvals;
+  uint32_t denials;
   uint16_t velocity[8];      // ring buffer: seconds-to-respond per approval
   uint8_t  velIdx;
   uint8_t  velCount;
@@ -29,8 +29,8 @@ static bool _dirty = false;
 inline void statsLoad() {
   _prefs.begin("buddy", true);
   _stats.napSeconds = _prefs.getUInt("nap", 0);
-  _stats.approvals  = _prefs.getUShort("appr", 0);
-  _stats.denials    = _prefs.getUShort("deny", 0);
+  _stats.approvals  = _prefs.getUInt("appr", 0);
+  _stats.denials    = _prefs.getUInt("deny", 0);
   _stats.velIdx     = _prefs.getUChar("vidx", 0);
   _stats.velCount   = _prefs.getUChar("vcnt", 0);
   _stats.level      = _prefs.getUChar("lvl", 0);
@@ -49,8 +49,8 @@ inline void statsSave() {
   if (!_dirty) return;
   _prefs.begin("buddy", false);
   _prefs.putUInt("nap", _stats.napSeconds);
-  _prefs.putUShort("appr", _stats.approvals);
-  _prefs.putUShort("deny", _stats.denials);
+  _prefs.putUInt("appr", _stats.approvals);
+  _prefs.putUInt("deny", _stats.denials);
   _prefs.putUChar("vidx", _stats.velIdx);
   _prefs.putUChar("vcnt", _stats.velCount);
   _prefs.putUChar("lvl", _stats.level);
@@ -148,7 +148,7 @@ inline uint8_t statsMoodTier() {
   else if (vel < 60) tier = 2;
   else if (vel < 120) tier = 1;
   else tier = 0;
-  uint16_t a = _stats.approvals, d = _stats.denials;
+  uint32_t a = _stats.approvals, d = _stats.denials;
   if (a + d >= 3) {                    // need a few decisions before judging
     if (d > a) tier -= 2;
     else if (d * 2 > a) tier -= 1;     // deny rate > 33%
@@ -182,10 +182,12 @@ struct Settings {
   bool wifi;     // placeholder — no WiFi stack linked yet, just stores the pref
   bool led;
   bool hud;
+  bool dnd;          // do not disturb: silence sound + LED, dim screen
   uint8_t clockRot;  // 0=auto 1=portrait 2=landscape
+  uint8_t bright;    // 0..4, persisted so it survives reboots
 };
 
-static Settings _settings = { true, true, false, true, true, 0 };
+static Settings _settings = { true, true, false, true, true, false, 0, 4 };
 
 inline void settingsLoad() {
   _prefs.begin("buddy", true);
@@ -194,8 +196,11 @@ inline void settingsLoad() {
   _settings.wifi  = _prefs.getBool("s_wifi",false);
   _settings.led   = _prefs.getBool("s_led", true);
   _settings.hud      = _prefs.getBool("s_hud", true);
+  _settings.dnd      = _prefs.getBool("s_dnd", false);
   _settings.clockRot = _prefs.getUChar("s_crot", 0);
   if (_settings.clockRot > 2) _settings.clockRot = 0;
+  _settings.bright   = _prefs.getUChar("s_brt", 4);
+  if (_settings.bright > 4) _settings.bright = 4;
   _prefs.end();
 }
 
@@ -206,7 +211,9 @@ inline void settingsSave() {
   _prefs.putBool("s_wifi",_settings.wifi);
   _prefs.putBool("s_led", _settings.led);
   _prefs.putBool("s_hud", _settings.hud);
+  _prefs.putBool("s_dnd", _settings.dnd);
   _prefs.putUChar("s_crot", _settings.clockRot);
+  _prefs.putUChar("s_brt",  _settings.bright);
   _prefs.end();
 }
 
