@@ -1073,11 +1073,10 @@ static void drawStatusBar(const Palette& p) {
   if (dataRtcValid()) snprintf(hm, sizeof(hm), "%02u:%02u", _clkTm.Hours, _clkTm.Minutes);
   else                strcpy(hm, "--:--");
   spr.setTextDatum(TR_DATUM);
-  spr.setTextSize(2);
-  spr.setTextColor(p.text, p.bg);
-  spr.drawString(hm, W - 4, 3);
-  spr.setTextDatum(TL_DATUM);
   spr.setTextSize(1);
+  spr.setTextColor(p.text, p.bg);
+  spr.drawString(hm, W - 4, 8);
+  spr.setTextDatum(TL_DATUM);
 
   spr.drawFastHLine(0, BAR_H - 1, W, p.textDim);
 }
