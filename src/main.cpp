@@ -997,11 +997,6 @@ void drawHUD() {
     spr.setTextColor(p.body, p.bg);
     spr.setCursor(W - 18, H - LH - 2);
     spr.printf("-%u", msgScroll);
-  } else if (tama.connected) {
-    const char* badge = dataBtActive() ? "BT" : "USB";
-    spr.setTextColor(p.textDim, p.bg);
-    spr.setCursor(W - (int)strlen(badge) * 6, H - LH - 2);
-    spr.print(badge);
   }
 }
 
@@ -1267,7 +1262,13 @@ void loop() {
   // when the screen is off, napping, or in do-not-disturb. Breathing is user-
   // initiated focus, so it stays lit even in DND.
   ledsForceBreath(breathOpen, breathStartMs);
-  ledsSetState(activeState,
+  // A dismissed prompt should stop alerting. The pending session keeps
+  // activeState at P_ATTENTION, but once B is pressed (promptDismissed, sticky)
+  // the LED alert goes quiet — drop attention → idle for the bar until the
+  // question changes or clears. (LED only; the on-screen buddy is unchanged.)
+  PersonaState ledState =
+      (promptDismissed && activeState == P_ATTENTION) ? P_IDLE : activeState;
+  ledsSetState(ledState,
                settings().led && (breathOpen || (!settings().dnd && !screenOff && !napping)),
                brightLevel);
   ledsTick(now);
