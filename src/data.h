@@ -19,6 +19,8 @@ struct TamaState {
   char     promptId[40];     // pending permission request ID; empty = no prompt
   char     promptTool[20];
   char     promptHint[96];   // wider on the landscape screen for richer detail
+  int8_t   sessionPct = -1;  // Claude usage: 5h session window % (-1 = unknown)
+  int8_t   weeklyPct  = -1;  // Claude usage: weekly window %
 };
 
 // ---------------------------------------------------------------------------
@@ -103,6 +105,15 @@ static void _applyJson(const char* line, TamaState* out) {
     return;
   }
 
+  // Usage % (from the companion script): update the values and return without
+  // touching session state or the pending prompt, so a usage message on a 2nd
+  // BLE link never clobbers the desktop app's state/approval data.
+  if (doc["session_pct"].is<int>() || doc["weekly_pct"].is<int>()) {
+    if (doc["session_pct"].is<int>()) out->sessionPct = (int8_t)(int)doc["session_pct"];
+    if (doc["weekly_pct"].is<int>())  out->weeklyPct  = (int8_t)(int)doc["weekly_pct"];
+    return;
+  }
+
   out->sessionsTotal     = doc["total"]     | out->sessionsTotal;
   out->sessionsRunning   = doc["running"]   | out->sessionsRunning;
   out->sessionsWaiting   = doc["waiting"]   | out->sessionsWaiting;
@@ -171,6 +182,7 @@ inline void dataPoll(TamaState* out) {
     out->sessionsTotal=s.t; out->sessionsRunning=s.r; out->sessionsWaiting=s.w;
     out->recentlyCompleted=s.c; out->tokensToday=s.tok; out->lastUpdated=now;
     out->connected = true;
+    out->sessionPct = 45; out->weeklyPct = 30;   // fake usage for the status bar
     snprintf(out->msg, sizeof(out->msg), "demo: %s", s.n);
     // Dummy permission prompt during the "attention" scenario so the approval
     // panel (and its alert melody / LED) can be exercised without a live bridge.

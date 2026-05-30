@@ -131,7 +131,24 @@ void bleInit(const char* deviceName) {
   sec->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
 
   BLEAdvertising* adv = BLEDevice::getAdvertising();
-  adv->addServiceUUID(NUS_SERVICE_UUID);
+  // The 128-bit NUS UUID (18 bytes) + the name don't both fit in one 31-byte
+  // advertisement packet, so auto-building drops/mangles one — which makes the
+  // device invisible to service-filtered scanners like the desktop Hardware
+  // Buddy ("saw 0 sticks"). Split them explicitly: UUID + flags in the adv
+  // packet, name in the scan response. Both then fit and both are discoverable.
+  BLEAdvertisementData advData;
+  advData.setFlags(0x06);   // LE General Discoverable, BR/EDR not supported
+  advData.setCompleteServices(BLEUUID(NUS_SERVICE_UUID));
+  // macOS uses passive BLE scanning and never sends a scan request, so it
+  // never sees the scan response (which holds the full "Claude-XXXX" name).
+  // A shortened local name here costs 8 bytes and fits in the remaining 10
+  // bytes of the 31-byte ad packet (flags=3, UUID=18). This lets macOS's
+  // passive scanner learn the name without needing a scan response.
+  advData.setShortName("Claude");
+  adv->setAdvertisementData(advData);
+  BLEAdvertisementData scanResp;
+  scanResp.setName(deviceName);
+  adv->setScanResponseData(scanResp);
   adv->setScanResponse(true);
   adv->setMinPreferred(0x06);   // iOS-friendly connection interval
   adv->setMaxPreferred(0x12);

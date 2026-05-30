@@ -259,7 +259,8 @@ inline const char* ownerName() { return _ownerName; }
 
 inline uint8_t speciesIdxLoad() {
   _prefs.begin("buddy", true);
-  uint8_t v = _prefs.getUChar("species", 0xFF);
+  // Default 0xFE = SPECIES_CLAWD: a fresh device boots to the Clawd mascot.
+  uint8_t v = _prefs.getUChar("species", 0xFE);
   _prefs.end();
   return v;
 }

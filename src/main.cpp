@@ -29,6 +29,7 @@ static void startBt() {
 #include "stats.h"
 #include "leds.h"
 #include "melody.h"
+#include "buddy_clawd.h"
 const int W = 320, H = 240;   // full landscape panel = the PSRAM sprite size
 const int CX = W / 2;         // 160
 const int CY_BASE = 120;
@@ -81,24 +82,40 @@ bool     swallowBtnB = false;
 bool     swallowBtnC = false;
 bool     buddyMode = false;
 bool     gifAvailable = false;
-const uint8_t SPECIES_GIF = 0xFF;   // species NVS sentinel: use the installed GIF
+bool     clawdMode = false;          // Clawd RLE-sprite mascot (default boot persona)
+bool     lowBatteryNow = false;      // coarse IP5306 low-battery flag (set by 10s poll)
+const uint8_t SPECIES_GIF   = 0xFF;  // species NVS sentinel: use the installed GIF
+const uint8_t SPECIES_CLAWD = 0xFE;  // species NVS sentinel: use Clawd
 
 // Cycle GIF (if installed) → ASCII species 0..N-1 → GIF. Persisted to the
 // existing "species" NVS key; 0xFF means GIF mode.
+// Cycle: Clawd → ASCII species 0..N-1 → installed GIF (if any) → Clawd.
 static void nextPet() {
   uint8_t n = buddySpeciesCount();
-  if (!buddyMode) {                          // GIF → species 0
+  if (clawdMode) {                           // Clawd → ASCII species 0
+    clawdMode = false;
     buddyMode = true;
     buddySetSpeciesIdx(0);
     speciesIdxSave(0);
-  } else if (buddySpeciesIdx() + 1 >= n && gifAvailable) {  // last species → GIF
-    buddyMode = false;
-    speciesIdxSave(SPECIES_GIF);
-  } else {                                   // species i → species i+1
-    buddyNextSpecies();
+  } else if (buddyMode) {
+    if (buddySpeciesIdx() + 1 >= n) {        // last ASCII → GIF if installed, else Clawd
+      buddyMode = false;
+      if (gifAvailable) {
+        speciesIdxSave(SPECIES_GIF);
+      } else {
+        clawdMode = true;
+        speciesIdxSave(SPECIES_CLAWD);
+      }
+    } else {                                 // species i → species i+1
+      buddyNextSpecies();
+    }
+  } else {                                   // GIF → Clawd
+    clawdMode = true;
+    speciesIdxSave(SPECIES_CLAWD);
   }
   characterInvalidate();
   if (buddyMode) buddyInvalidate();
+  if (clawdMode) clawdInvalidate();
 }
 uint32_t wakeTransitionUntil = 0;
 const uint32_t SCREEN_OFF_MS = 30000;
@@ -124,7 +141,6 @@ static void applyBrightness() {
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
-    setCpuFrequencyMhz(240);   // full speed for active rendering
     Axp.SetLDO2(true);
     applyBrightness();
     screenOff = false;
@@ -156,6 +172,7 @@ void applyDisplayMode() {
   bool peek = displayMode != DISP_NORMAL;
   characterSetPeek(peek);
   buddySetPeek(peek);
+  clawdSetPeek(peek);
   // Clear the whole sprite on mode switch. drawInfo/drawPet clear their
   // own regions when they run, but when you switch FROM info/pet TO normal,
   // those functions stop running and their stale pixels stay behind. Full
@@ -307,8 +324,9 @@ static void drawSettings() {
       static const char* const RN[] = { "auto", "port", "land" };
       spr.print(RN[s.clockRot]);
     } else if (i == 7) {
-      uint8_t total = buddySpeciesCount() + (gifAvailable ? 1 : 0);
-      uint8_t pos   = buddyMode ? buddySpeciesIdx() + 1 : total;
+      // Cycle: Clawd (1) → ASCII 0..N-1 (2..N+1) → GIF (last, if installed).
+      uint8_t total = buddySpeciesCount() + 1 + (gifAvailable ? 1 : 0);
+      uint8_t pos   = clawdMode ? 1 : (buddyMode ? 2 + buddySpeciesIdx() : total);
       spr.printf("%u/%u", pos, total);
     }
   }
@@ -493,7 +511,12 @@ static void drawClock() {
   static uint32_t lastPetTick = 0;
   if (millis() - lastPetTick >= 200) {
     lastPetTick = millis();
-    if (buddyMode) {
+    if (clawdMode) {
+      // Clawd isn't rendered on the landscape clock pet slot yet (the slot is
+      // small + the LCD is rotated here, which the centered Clawd renderer
+      // doesn't account for). Clear the slot and skip — the clock still shows.
+      M5.Lcd.fillRect(0, 0, 115, 90, p.bg);
+    } else if (buddyMode) {
       // ASCII glyphs don't self-clear; wipe the box each tick. Species
       // hardcode BUDDY_X_CENTER=67 / BUDDY_Y_OVERLAY=6 for particles so
       // keep portrait coords and just swap the surface — pet lands
@@ -516,8 +539,8 @@ PersonaState derive(const TamaState& s) {
   if (!s.connected)            return P_IDLE;
   if (s.sessionsWaiting > 0)   return P_ATTENTION;
   if (s.recentlyCompleted)     return P_CELEBRATE;
-  if (s.sessionsRunning >= 3)  return P_BUSY;
-  return P_IDLE;   // connected, 0+ sessions, nothing urgent — hang out
+  if (s.sessionsRunning >= 1)  return P_BUSY;
+  return P_IDLE;   // connected, no running sessions — hang out
 }
 
 void triggerOneShot(PersonaState s, uint32_t durMs) {
@@ -1005,6 +1028,20 @@ static void drawStatusBar(const Palette& p) {
   spr.setCursor(22, 8);
   spr.print(linked ? (dataBtActive() ? "linked" : "paired") : btName);
 
+  // Claude usage % (from the companion), center: session + weekly. Colored by
+  // the higher of the two; dim "--" until the companion provides data.
+  {
+    int8_t sp = tama.sessionPct, wk = tama.weeklyPct;
+    int hi = sp > wk ? sp : wk;
+    uint16_t uc = (hi < 0) ? p.textDim : (hi >= 90 ? HOT : hi >= 70 ? 0xFFE0 : GREEN);
+    char ub[16];
+    if (sp < 0 && wk < 0) strcpy(ub, "S--% W--%");
+    else snprintf(ub, sizeof(ub), "S%d%% W%d%%", sp < 0 ? 0 : sp, wk < 0 ? 0 : wk);
+    spr.setTextColor(uc, p.bg);
+    spr.setCursor(92, 8);
+    spr.print(ub);
+  }
+
   // Battery: outlined cell + fill + percentage. The Fire's IP5306 only reports
   // a coarse level (0/25/50/75/100) — there's no voltage readout — and -1 if
   // it can't be read. isCharging() works, so show charge state too.
@@ -1077,9 +1114,14 @@ static void drawBreath(uint32_t now) {
   char cbuf[16]; snprintf(cbuf, sizeof(cbuf), "cycle %u", cycleNum);
   spr.drawString(cbuf, W - 6, 6);
 
-  // The buddy, scaled by the breath (calm sleep pose). Black is transparent.
+  // The buddy, scaled by the breath (calm pose). Black is transparent.
   breathBuddy.fillScreen(0x0000);
-  buddyRenderTo(&breathBuddy, P_SLEEP);
+  if (clawdMode) {
+    clawdSetContext(tama.connected, lowBatteryNow, true);  // breathing scene → calm Clawd
+    clawdRenderTo(&breathBuddy, P_IDLE);
+  } else {
+    buddyRenderTo(&breathBuddy, P_SLEEP);
+  }
   float zoom = 1.0f + (lvl / 255.0f) * 1.3f;          // 1.0 (empty) .. 2.3 (full)
   breathBuddy.pushRotateZoom(&spr, W / 2, 116, 0.0f, zoom, zoom, 0x0000);
 
@@ -1134,12 +1176,26 @@ void setup() {
   spr.createSprite(320, 240);
   spritePushX = 0;
   spritePushY = 0;
+  clawdInit();             // allocate the Clawd decode canvas (PSRAM)
   characterInit(nullptr);  // scan /characters/ for whatever is installed
   gifAvailable = characterLoaded();
-  // species NVS: 0..N-1 = ASCII species, 0xFF = use GIF (also the default,
-  // so a fresh install lands on the GIF). With no GIF installed, 0xFF falls
-  // through to buddyInit()'s clamped default.
-  buddyMode = !(gifAvailable && speciesIdxLoad() == SPECIES_GIF);
+  // Persona mode from NVS "species":
+  //   0..N-1        → ASCII species index
+  //   SPECIES_GIF   → installed GIF (falls back to Clawd if none installed)
+  //   SPECIES_CLAWD → Clawd (also the fresh-device default; see speciesIdxLoad)
+  {
+    uint8_t saved = speciesIdxLoad();
+    clawdMode = false;
+    buddyMode = false;
+    if (saved == SPECIES_GIF) {
+      if (!gifAvailable) clawdMode = true;   // GIF requested but none → Clawd
+      // else: GIF mode (both flags false)
+    } else if (saved < buddySpeciesCount()) {
+      buddyMode = true;                      // ASCII species
+    } else {
+      clawdMode = true;                      // SPECIES_CLAWD or unset → Clawd
+    }
+  }
   applyDisplayMode();
 
   {
@@ -1219,7 +1275,8 @@ void loop() {
   if (now - lastBattChk > 10000) {
     lastBattChk = now;
     int blvl = M5.Power.getBatteryLevel();
-    ledsLowBattery(blvl >= 0 && blvl <= 25 && !M5.Power.isCharging());
+    lowBatteryNow = (blvl >= 0 && blvl <= 25 && !M5.Power.isCharging());
+    ledsLowBattery(lowBatteryNow);
   }
 
   // shake → dizzy + force scenario advance
@@ -1256,6 +1313,7 @@ void loop() {
       applyDisplayMode();
       characterInvalidate();
       if (buddyMode) buddyInvalidate();
+      if (clawdMode) clawdInvalidate();
     }
   }
 
@@ -1293,7 +1351,6 @@ void loop() {
     } else {
       Axp.SetLDO2(false);
       screenOff = true;
-      setCpuFrequencyMhz(80);   // idle: drop to BLE-min clock to save power
     }
   }
 
@@ -1305,6 +1362,7 @@ void loop() {
       M5.Lcd.fillScreen(characterPalette().bg);
       characterInvalidate();
       if (buddyMode) buddyInvalidate();
+      if (clawdMode) clawdInvalidate();
       applyDisplayMode();
     } else if (M5.BtnB.wasPressed() && !swallowBtnB) {
       ledsSetBreath((ledsBreathIdx() + 1) % BREATH_COUNT);
@@ -1424,6 +1482,7 @@ void loop() {
       applyDisplayMode();
       characterInvalidate();
       if (buddyMode) buddyInvalidate();
+      if (clawdMode) clawdInvalidate();
     } else {
       breathOpen = true; breathStartMs = now; breathDirty = true;
       beep(1500, 60);
@@ -1455,6 +1514,7 @@ void loop() {
     else applyDisplayMode();
     characterInvalidate();
     if (buddyMode) buddyInvalidate();
+    if (clawdMode) clawdInvalidate();
     wasClocking = clocking;
     wasLandscape = landscapeClock;
   }
@@ -1492,12 +1552,16 @@ void loop() {
     spr.fillSprite(characterPalette().bg);
     characterInvalidate();
     if (buddyMode) buddyInvalidate();
+    if (clawdMode) clawdInvalidate();
   }
   wasOverlay = isOverlay;
 
   if (napping || screenOff || landscapeClock) {
     // skip sprite render — face-down, powered off, or landscape clock
     // (which draws direct-to-LCD below)
+  } else if (clawdMode) {
+    clawdSetContext(tama.connected, lowBatteryNow, false);
+    clawdTick(activeState);
   } else if (buddyMode) {
     buddyTick(activeState);
   } else if (characterLoaded()) {
@@ -1571,7 +1635,6 @@ void loop() {
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
     Axp.SetLDO2(false);
     screenOff = true;
-    setCpuFrequencyMhz(80);   // idle: drop to BLE-min clock to save power
   }
 
   delay(screenOff ? 100 : 16);
