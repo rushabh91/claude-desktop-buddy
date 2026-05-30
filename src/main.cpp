@@ -6,6 +6,7 @@
 #include "buddy.h"
 
 TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
+TFT_eSprite breathBuddy = TFT_eSprite(&M5.Lcd);   // offscreen buddy for the breathing zoom
 
 // Single definitions of the M5StickCPlus->M5Unified compat shims (declared
 // extern in include/M5StickCPlus.h).
@@ -1044,70 +1045,53 @@ static void drawStatusBar(const Palette& p) {
   spr.drawFastHLine(0, BAR_H - 1, W, p.textDim);
 }
 
-// Dedicated breathing-exercise screen, drawn direct to the LCD (full 320x240).
-// The disc grows on inhale, holds full (white), shrinks on exhale, rests dark —
-// synced to the LED bar via the shared breath clock. Text repaints only on
-// change and the disc only when it moves, so it stays flicker-free without a
-// full-screen backbuffer.
+// Dedicated breathing-exercise screen, drawn into the PSRAM sprite. The buddy
+// itself paces the breath: it grows on inhale, holds big at the top, shrinks on
+// exhale, holds small when empty. The buddy is rendered into an offscreen
+// canvas and zoom-blitted, so the scaling is smooth and flicker-free.
 static void drawBreath(uint32_t now) {
   const Palette& p = characterPalette();
-  const int cx = 160, cy = 120, minR = 16, maxR = 82;
-  const uint16_t MOVE = 0x051F, HOLD = 0xFFFF, EMPTY = 0x2104;  // blue / white / dim
-
   uint32_t bt = ledsBreathClock(now);
   BreathPhase ph; uint8_t secs; const char* label;
   uint8_t lvl = ledsBreathInfo(bt, &ph, &secs, &label);
-  uint16_t radius = minR + (uint16_t)((uint32_t)(maxR - minR) * lvl / 255);
-  uint16_t color  = (ph == BR_HOLD_FULL) ? HOLD : (ph == BR_HOLD_EMPTY) ? EMPTY : MOVE;
-  uint32_t cyc    = ledsBreathCycleMs();
+  uint32_t cyc = ledsBreathCycleMs();
   uint16_t cycleNum = cyc ? (uint16_t)(bt / cyc) + 1 : 1;
 
-  static uint16_t lastRadius = 0, lastColor = 0, lastCycle = 0xFFFF;
-  static uint8_t  lastSecs = 0xFF;
-  static BreathPhase lastPhase = (BreathPhase)0xFF;
-
-  if (breathDirty) {
-    M5.Lcd.fillScreen(p.bg);
-    M5.Lcd.setTextDatum(TL_DATUM);
-    M5.Lcd.setTextColor(p.textDim, p.bg);
-    M5.Lcd.setTextSize(2);
-    M5.Lcd.drawString(ledsBreathName(), 6, 6);
-    lastRadius = 0; lastColor = 0; lastCycle = 0xFFFF; lastSecs = 0xFF;
-    lastPhase = (BreathPhase)0xFF;
-    breathDirty = false;
+  // Lazy-init the offscreen buddy canvas in PSRAM. 320 wide so the buddy's
+  // fixed x-center (160) lands in it; pivot at the buddy's center for the zoom.
+  if (!breathBuddy.getBuffer()) {
+    breathBuddy.setColorDepth(16);
+    breathBuddy.setPsram(true);
+    breathBuddy.createSprite(320, 110);
+    breathBuddy.setPivot(W / 2, 42);
   }
 
-  // Disc: repaint only when it moves or changes color (steady during holds).
-  if (radius != lastRadius || color != lastColor) {
-    M5.Lcd.fillCircle(cx, cy, radius, color);
-    if (radius < lastRadius) M5.Lcd.fillArc(cx, cy, radius, lastRadius, 0, 360, p.bg);
-    lastRadius = radius; lastColor = color;
-  }
+  spr.fillSprite(p.bg);
 
-  // Phase word + per-phase countdown, below the disc; repaint on change.
-  if (ph != lastPhase || secs != lastSecs) {
-    M5.Lcd.fillRect(0, 208, 320, 32, p.bg);
-    M5.Lcd.setTextDatum(TC_DATUM);
-    M5.Lcd.setTextColor(p.text, p.bg);
-    M5.Lcd.setTextSize(3);
-    char line[24]; snprintf(line, sizeof(line), "%s %u", label, secs);
-    M5.Lcd.drawString(line, cx, 210);
-    lastPhase = ph; lastSecs = secs;
-  }
+  // Pattern name (top-left) + cycle counter (top-right).
+  spr.setTextSize(2);
+  spr.setTextColor(p.textDim, p.bg);
+  spr.setTextDatum(TL_DATUM);
+  spr.drawString(ledsBreathName(), 6, 6);
+  spr.setTextDatum(TR_DATUM);
+  char cbuf[16]; snprintf(cbuf, sizeof(cbuf), "cycle %u", cycleNum);
+  spr.drawString(cbuf, W - 6, 6);
 
-  // Cycle counter, top-right; repaint on change.
-  if (cycleNum != lastCycle) {
-    M5.Lcd.fillRect(232, 0, 88, 22, p.bg);
-    M5.Lcd.setTextDatum(TR_DATUM);
-    M5.Lcd.setTextColor(p.textDim, p.bg);
-    M5.Lcd.setTextSize(2);
-    char c[16]; snprintf(c, sizeof(c), "cycle %u", cycleNum);
-    M5.Lcd.drawString(c, 314, 6);
-    lastCycle = cycleNum;
-  }
+  // The buddy, scaled by the breath (calm sleep pose). Black is transparent.
+  breathBuddy.fillScreen(0x0000);
+  buddyRenderTo(&breathBuddy, P_SLEEP);
+  float zoom = 1.0f + (lvl / 255.0f) * 1.3f;          // 1.0 (empty) .. 2.3 (full)
+  breathBuddy.pushRotateZoom(&spr, W / 2, 116, 0.0f, zoom, zoom, 0x0000);
 
-  M5.Lcd.setTextDatum(TL_DATUM);
-  M5.Lcd.setTextSize(1);
+  // Phase word + per-phase countdown.
+  spr.setTextDatum(TC_DATUM);
+  spr.setTextSize(3);
+  spr.setTextColor(p.text, p.bg);
+  char line[24]; snprintf(line, sizeof(line), "%s %u", label, secs);
+  spr.drawString(line, W / 2, 206);
+
+  spr.setTextDatum(TL_DATUM);
+  spr.setTextSize(1);
 }
 
 void setup() {
@@ -1496,6 +1480,7 @@ void loop() {
 
   if (breathOpen) {
     drawBreath(now);
+    spr.pushSprite(spritePushX, spritePushY);
   } else {
   // When an overlay (menu/settings/reset, or the taller approval panel) closes,
   // the buddy + HUD only repaint their own regions, leaving a strip of the old
