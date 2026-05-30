@@ -22,25 +22,36 @@ waiting, and lets you approve or deny right from the device.
 
 ## Hardware
 
-The firmware targets ESP32 with the Arduino framework. As written, it
-depends on the M5StickCPlus library for its display, IMU, and button
-drivers—so you'll need that board, or a fork that swaps those drivers for
-your own pin layout.
+The firmware targets two boards:
+
+| Board | PlatformIO env | Screen | Notes |
+|---|---|---|---|
+| **M5Stack Fire** | `m5stack-fire` | 320×240 landscape ILI9341 | 3 buttons, IP5306 battery, 16MB flash, 4MB PSRAM |
+| M5StickC Plus | *(upstream)* | 135×240 portrait ST7789 | 2 buttons + accel |
+
+The Fire port uses a full-screen PSRAM sprite (320×240 @ 16bpp) that needs the 16MB partition table in `partitions_fire.csv` — it won't fit on the stock 4MB layout.
+
+### Fire hardware notes
+
+- **Battery:** IP5306 only reports 0/25/50/75/100% (no voltage readout). `isCharging()` works.
+- **Clock:** no RTC — time is synced from the desktop app over BLE on connect.
+- **No accelerometer** on Fire — shake/nap features are disabled.
+- **Buttons:** BtnA (front), BtnB (right), BtnC (right, lower).
 
 ## Flashing
 
 Install
 [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
-then:
+then for M5Stack Fire:
 
 ```bash
-pio run -t upload
+pio run -e m5stack-fire -t upload
 ```
 
 If you're starting from a previously-flashed device, wipe it first:
 
 ```bash
-pio run -t erase && pio run -t upload
+pio run -e m5stack-fire -t erase && pio run -e m5stack-fire -t upload
 ```
 
 Once running, you can also wipe everything from the device itself: **hold A
@@ -66,20 +77,75 @@ If discovery isn't finding the stick:
 - Make sure it's awake (any button press)
 - Check the stick's settings menu → bluetooth is on
 
-## Controls
+## Controls (M5Stack Fire — 3-button scheme)
 
-|                         | Normal               | Pet         | Info        | Approval    |
-| ----------------------- | -------------------- | ----------- | ----------- | ----------- |
-| **A** (front)           | next screen          | next screen | next screen | **approve** |
-| **B** (right)           | scroll transcript    | next page   | next page   | **deny**    |
-| **Hold A**              | menu                 | menu        | menu        | menu        |
-| **Power** (left, short) | toggle screen off    |             |             |             |
-| **Power** (left, ~6s)   | hard power off       |             |             |             |
-| **Shake**               | dizzy                |             |             | —           |
-| **Face-down**           | nap (energy refills) |             |             |             |
+### Normal / transcript mode
+
+| Button | Action |
+|--------|--------|
+| **A** (front) | Next screen (transcript → approval → info → …) |
+| **B** (right, upper) | Scroll transcript |
+| **C** (right, lower) | Enter breathing mode |
+| **Hold A** | Open menu |
+| **Power** (left, short press) | Toggle screen off/on |
+| **Power** (left, ~6s hold) | Hard power off |
+
+### Approval prompt
+
+| Button | Action |
+|--------|--------|
+| **A** | ✓ Approve once |
+| **B** | Dismiss (skip this prompt) |
+| **C** | ✗ Deny |
+
+### Menu navigation
+
+| Button | Action |
+|--------|--------|
+| **A** | ▼ Move down |
+| **C** | ▲ Move up |
+| **B** | ● Select / confirm |
+
+Menu hints are shown on-screen as `A▼ C▲ B●`.
+
+### Breathing mode (BtnC from normal screen)
+
+BtnC enters a breathing guide. The buddy scales with the breath. A pattern
+picker cycles through box (4-4-4-4), 4-7-8, and coherent (5-5) patterns.
+BtnC again, or BtnA, returns to normal. The RGB LED bar pulses in sync.
 
 The screen auto-powers-off after 30s of no interaction (kept on while an
 approval prompt is up). Any button press wakes it.
+
+## Status bar (Fire landscape layout)
+
+The top 20px of the screen is a persistent status bar:
+
+| Position | Content |
+|----------|---------|
+| Left | BT icon (dim=unpaired, white=paired, green=encrypted) · device name |
+| Center | `S__% W__%` — Claude Code session / weekly token usage (from usage companion) |
+| Right | Battery level + charging indicator |
+| Far right | Clock (`HH:MM`, synced over BLE) · DND moon (when do-not-disturb is on) |
+
+## RGB LED bar
+
+The Fire has a 10-pixel SK6812 RGB bar. Behavior:
+
+| State | Color/pattern |
+|-------|---------------|
+| Idle / busy | Off (bar is dark unless breathing mode is active) |
+| Breathing mode | Pulses with the breath cycle — matches the buddy scale animation |
+| Low battery (<15%) | Slow red pulse (warning) |
+| DND active | Bar stays dark |
+| Per-persona | Each ASCII persona has a signature color used during breathing |
+
+## Do Not Disturb
+
+Menu → **DND** (or the top-level DND option) toggles a mode that silences
+all melodies, turns the LED bar off, dims the screen, and shows a moon
+icon in the status bar. Approval prompts still show; only sounds and LEDs
+are suppressed.
 
 ## ASCII pets
 
@@ -122,7 +188,7 @@ State values can be a single filename or an array. Arrays rotate: each
 loop-end advances to the next GIF, useful for an idle activity carousel so
 the home screen doesn't loop one clip forever.
 
-GIFs are 96px wide; height up to ~140px stays on a 135×240 portrait screen.
+GIFs are 96px wide (Fire landscape: character is centered in the ~220px buddy area).
 Crop tight to the character — transparent margins waste screen and shrink
 the sprite. `tools/prep_character.py` handles the resize: feed it source
 GIFs at any sizes and it produces a 96px-wide set where the character is the
@@ -149,20 +215,37 @@ If you're iterating on a character and would rather skip the BLE round-trip,
 | `dizzy`     | you shook the stick         | spiral eyes, wobbling       |
 | `heart`     | approved in under 5s        | floating hearts             |
 
+## Clawd persona
+
+The compiled-in `clawd` persona is an RLE-encoded sprite of the Clawd mascot
+rather than an ASCII buddy. It uses the same 7-state machine (sleep/idle/busy/
+attention/celebrate/dizzy/heart) and renders at full size in the buddy area.
+Cycle to it via menu → next pet.
+
+## Usage companion
+
+A host-side Python script pushes Claude Code token-usage percentages to the
+device over BLE so the status bar shows `S__% W__%` (session / weekly).
+See [`tools/usage_companion/README.md`](tools/usage_companion/README.md).
+
 ## Project layout
 
 ```
 src/
-  main.cpp       — loop, state machine, UI screens
-  buddy.cpp      — ASCII species dispatch + render helpers
-  buddies/       — one file per species, seven anim functions each
-  ble_bridge.cpp — Nordic UART service, line-buffered TX/RX
-  character.cpp  — GIF decode + render
-  data.h         — wire protocol, JSON parse
-  xfer.h         — folder push receiver
-  stats.h        — NVS-backed stats, settings, owner, species choice
-characters/      — example GIF character packs
-tools/           — generators and converters
+  main.cpp           — loop, state machine, UI screens (landscape 320×240)
+  buddy.cpp          — ASCII species dispatch + render helpers
+  buddies/           — one file per species, seven anim functions each
+  ble_bridge.cpp     — Nordic UART service, 2-connection support
+  character.cpp      — GIF decode + render
+  data.h             — wire protocol, JSON parse (incl. session_pct/weekly_pct)
+  xfer.h             — folder push receiver
+  stats.h            — NVS-backed stats, settings, owner, species choice
+  leds.h             — SK6812 LED bar (breathing, low-battery, DND)
+characters/          — example GIF character packs
+tools/
+  usage_companion/   — BLE companion that pushes usage % to the device
+  ble_scan.py        — quick BLE scan helper
+partitions_fire.csv  — 16MB partition table for M5Stack Fire
 ```
 
 ## Availability

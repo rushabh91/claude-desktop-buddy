@@ -22,11 +22,20 @@ window open for initial pairing, the stats panel, or the folder drop target.
 
 **BLE Nordic UART Service** (the de-facto serial-over-BLE standard):
 
-|                               | UUID                                   |
-| ----------------------------- | -------------------------------------- |
-| Service                       | `6e400001-b5a3-f393-e0a9-e50e24dcca9e` |
-| RX (desktop → device, write)  | `6e400002-b5a3-f393-e0a9-e50e24dcca9e` |
-| TX (device → desktop, notify) | `6e400003-b5a3-f393-e0a9-e50e24dcca9e` |
+|                                          | UUID                                   | Permissions   |
+| ---------------------------------------- | -------------------------------------- | ------------- |
+| Service                                  | `6e400001-b5a3-f393-e0a9-e50e24dcca9e` | —             |
+| RX (desktop → device, write)             | `6e400002-b5a3-f393-e0a9-e50e24dcca9e` | encrypted     |
+| TX (device → desktop, notify)            | `6e400003-b5a3-f393-e0a9-e50e24dcca9e` | encrypted     |
+| Usage RX (companion → device, plaintext) | `6e400004-b5a3-f393-e0a9-e50e24dcca9e` | no pairing    |
+
+The **Usage RX** characteristic accepts the same JSON as the regular RX but
+requires no bonding — intended for the usage companion (see
+`tools/usage_companion/`). The device re-advertises on each new connection,
+so the desktop app and the companion can connect simultaneously.
+
+The regular RX/TX pair requires **LE Secure Connections bonding** — see
+[Security and pairing](#security-and-pairing).
 
 Advertise a name starting with `Claude` over the Nordic UART Service so the
 device picker can filter to you. Appending a few bytes of your BT MAC keeps
@@ -68,6 +77,8 @@ a keepalive every 10 seconds:
 | `entries`      | Recent transcript lines, newest first (capped to a few)                           |
 | `tokens`       | Cumulative output tokens since the desktop app started                            |
 | `tokens_today` | Output tokens since local midnight (persisted, survives restart)                  |
+| `session_pct`  | *(optional)* Claude Code 5-hour rolling window usage, 0–100. Sent by the usage companion, not the desktop app. |
+| `weekly_pct`   | *(optional)* Claude Code 7-day rolling window usage, 0–100. Sent by the usage companion. |
 | `prompt`       | Only present when a permission decision is needed. The `id` is what you echo back |
 
 A few useful derived signals: `running > 0` means at least one session is
