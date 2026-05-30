@@ -138,7 +138,11 @@ static void gifDrawCb(GIFDRAW* d) {
 // --- Public -------------------------------------------------------------
 
 bool characterInit(const char* name) {
-  if (!LittleFS.begin(false)) {
+  // format_on_fail=true: the Fire ships with an unformatted LittleFS
+  // partition (the stick was flashed with a prepared image). Without this the
+  // failed mount leaves bad state that crashes the next Serial write. On
+  // reload begin() returns false (already mounted) and the fallback handles it.
+  if (!LittleFS.begin(true)) {
     // begin() fails if already mounted — that's fine on reload
     if (!LittleFS.open("/")) {
       Serial.println("[char] LittleFS mount failed");
