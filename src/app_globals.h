@@ -17,8 +17,13 @@ const int CY_BASE = 120;
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
 const uint16_t PANEL = 0x2104;   // overlay panel background
 
+// Persona state machine. Defined/driven in main.cpp; the renderers take a plain
+// int, so UI modules only need the P_* values (e.g. breathing renders P_IDLE).
+enum PersonaState { P_SLEEP, P_IDLE, P_BUSY, P_ATTENTION, P_CELEBRATE, P_DIZZY, P_HEART };
+
 // ── Shared mutable state (defined in main.cpp) ──
 extern TFT_eSprite spr;          // the 320x240 PSRAM render sprite
+extern bool swallowBtnA, swallowBtnB, swallowBtnC;  // loop input-dispatch press guards
 extern float       accelBaseline;// adaptive shake baseline (shake-to-dizzy path)
 extern bool        clawdMode;    // Clawd mascot persona active
 extern bool        buddyMode;    // ASCII buddy persona active

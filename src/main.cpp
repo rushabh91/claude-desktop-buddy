@@ -1,6 +1,7 @@
 #include <M5StickCPlus.h>
 #include "app_globals.h"
 #include "games.h"
+#include "breathing.h"
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
@@ -8,7 +9,7 @@
 #include "buddy.h"
 
 TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
-TFT_eSprite breathBuddy = TFT_eSprite(&M5.Lcd);   // offscreen buddy for the breathing zoom
+// breathBuddy (the breathing-zoom offscreen sprite) now lives in breathing.cpp.
 
 // Single definitions of the M5StickCPlus->M5Unified compat shims (declared
 // extern in include/M5StickCPlus.h).
@@ -40,7 +41,7 @@ static int spritePushX = 0, spritePushY = 0;
 
 // HOT / PANEL now live in app_globals.h (shared with the UI modules).
 
-enum PersonaState { P_SLEEP, P_IDLE, P_BUSY, P_ATTENTION, P_CELEBRATE, P_DIZZY, P_HEART };
+// PersonaState now lives in app_globals.h (shared with the UI modules).
 const char* stateNames[] = { "sleep", "idle", "busy", "attention", "celebrate", "dizzy", "heart" };
 
 TamaState    tama;
@@ -64,12 +65,7 @@ bool    btnBLong     = false;
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
 uint8_t displayMode = DISP_NORMAL;
 
-// Dedicated breathing-exercise mode (entered with BtnC from the home screen).
-// Takes over the screen + LED bar, paces a chosen pattern, ignores screen
-// sleep. BtnB cycles patterns; BtnA/BtnC exit.
-bool     breathOpen    = false;
-uint32_t breathStartMs = 0;
-bool     breathDirty   = false;   // force a full repaint (on entry / pattern change)
+// Breathing-exercise mode now lives in breathing.{h,cpp}.
 
 // Mini-games (Catch + Shake Dance) now live in games.{h,cpp}.
 uint8_t infoPage = 0;
@@ -1224,63 +1220,7 @@ static void drawStatusBar(const Palette& p) {
 // screen is a compact HUD — streak, best, and the result on a miss.
 // drawGame() / gameStart() now live in games.cpp.
 
-static void drawBreath(uint32_t now) {
-  const Palette& p = characterPalette();
-  uint32_t bt = ledsBreathClock(now);
-  BreathPhase ph; uint8_t secs; const char* label;
-  uint8_t lvl = ledsBreathInfo(bt, &ph, &secs, &label);
-  uint32_t cyc = ledsBreathCycleMs();
-  uint16_t cycleNum = cyc ? (uint16_t)(bt / cyc) + 1 : 1;
-
-  // Lazy-init the offscreen buddy canvas in PSRAM. 320 wide so the buddy's
-  // fixed x-center (160) lands in it; pivot at the buddy's center for the zoom.
-  if (!breathBuddy.getBuffer()) {
-    breathBuddy.setColorDepth(16);
-    breathBuddy.setPsram(true);
-    breathBuddy.createSprite(320, 110);
-    breathBuddy.setPivot(W / 2, 42);
-  }
-
-  spr.fillSprite(p.bg);
-
-  // Pattern name (top-left) + cycle counter (top-right).
-  spr.setTextSize(2);
-  spr.setTextColor(p.textDim, p.bg);
-  spr.setTextDatum(TL_DATUM);
-  spr.drawString(ledsBreathName(), 6, 6);
-  spr.setTextDatum(TR_DATUM);
-  char cbuf[16]; snprintf(cbuf, sizeof(cbuf), "cycle %u", cycleNum);
-  spr.drawString(cbuf, W - 6, 6);
-
-  // The buddy, scaled by the breath (calm pose). Black is transparent.
-  breathBuddy.fillScreen(0x0000);
-  if (clawdMode) {
-    clawdSetContext(tama.connected, lowBatteryNow, true);  // breathing scene → calm Clawd
-    clawdRenderTo(&breathBuddy, P_IDLE);
-  } else {
-    buddyRenderTo(&breathBuddy, P_SLEEP);
-  }
-  float zoom = 1.0f + (lvl / 255.0f) * 1.3f;          // 1.0 (empty) .. 2.3 (full)
-  breathBuddy.pushRotateZoom(&spr, W / 2, 116, 0.0f, zoom, zoom, 0x0000);
-
-  // Phase word + per-phase countdown. Cyan-blue on the inhale, indigo/violet on
-  // the exhale so the two halves of the cycle read apart at a glance — the
-  // buddy's zoom alone looks the same mid-inhale and mid-exhale. Matches the bar.
-  uint16_t phaseColor;
-  switch (ph) {
-    case BR_INHALE: phaseColor = spr.color565(90, 190, 255); break;  // cyan-blue
-    case BR_EXHALE: phaseColor = spr.color565(150, 90, 255); break;  // indigo/violet
-    default:        phaseColor = p.text;                     break;  // holds: neutral
-  }
-  spr.setTextDatum(TC_DATUM);
-  spr.setTextSize(3);
-  spr.setTextColor(phaseColor, p.bg);
-  char line[24]; snprintf(line, sizeof(line), "%s %u", label, secs);
-  spr.drawString(line, W / 2, 206);
-
-  spr.setTextDatum(TL_DATUM);
-  spr.setTextSize(1);
-}
+// drawBreath() now lives in breathing.cpp as breathingDraw().
 
 void setup() {
   // The Fire's 4MB PSRAM is added to the heap but is unreliable on this SDK
@@ -1446,7 +1386,7 @@ void loop() {
   {
     static uint32_t nextBlipAt = 0;
     if (nextBlipAt == 0) nextBlipAt = now + 120000;        // grace: no blip for ~2 min after boot
-    if (clawdMode && !gameActive() && !breathOpen && !screenOff && !menuOpen && !careMenuOpen
+    if (clawdMode && !gameActive() && !breathingActive() && !screenOff && !menuOpen && !careMenuOpen
         && baseState == P_IDLE && statsHunger() <= 4
         && (int32_t)(now - nextBlipAt) >= 0 && (int32_t)(now - oneShotUntil) >= 0) {
       clawdTriggerScene(CLAWD_RX_GREET, 1200);
@@ -1471,7 +1411,7 @@ void loop() {
   // initiated focus, so it stays lit even in DND.
   gameTick(now);   // mini-game per-frame logic + LED bar (no-op when no game is open)
 
-  ledsForceBreath(breathOpen, breathStartMs);
+  ledsForceBreath(breathingActive(), breathingStartMs());
   // A dismissed prompt should stop alerting. The pending session keeps
   // activeState at P_ATTENTION, but once B is pressed (promptDismissed, sticky)
   // the LED alert goes quiet — drop attention → idle for the bar until the
@@ -1479,7 +1419,7 @@ void loop() {
   PersonaState ledState =
       (promptDismissed && activeState == P_ATTENTION) ? P_IDLE : activeState;
   ledsSetState(ledState,
-               settings().led && (breathOpen || (!settings().dnd && !screenOff && !napping)),
+               settings().led && (breathingActive() || (!settings().dnd && !screenOff && !napping)),
                brightLevel);
   ledsTick(now);
 
@@ -1530,7 +1470,7 @@ void loop() {
       swallowBtnA = swallowBtnB = swallowBtnC = true;
       // A prompt takes priority over a breathing session or a mini-game so it's
       // never missed — auto-exit either back to the approval screen.
-      if (breathOpen) { breathOpen = false; M5.Lcd.fillScreen(characterPalette().bg); }
+      if (breathingActive()) { breathingClose(); M5.Lcd.fillScreen(characterPalette().bg); }
       if (gameActive()) {
         gameBankAndClose();
         M5.Lcd.fillScreen(characterPalette().bg);
@@ -1584,22 +1524,8 @@ void loop() {
     if (M5.BtnC.wasPressed() && !swallowBtnC)      gameButtonC();
     else if (M5.BtnB.wasPressed() && !swallowBtnB) gameButtonB(now);
     swallowBtnA = swallowBtnB = swallowBtnC = false;
-  } else if (breathOpen) {
-    // Breathing mode owns the buttons: A or C exits, B cycles the pattern.
-    if ((M5.BtnA.wasReleased() && !swallowBtnA) || (M5.BtnC.wasPressed() && !swallowBtnC)) {
-      breathOpen = false;
-      beep(700, 40);
-      M5.Lcd.fillScreen(characterPalette().bg);
-      characterInvalidate();
-      if (buddyMode) buddyInvalidate();
-      if (clawdMode) clawdInvalidate();
-      applyDisplayMode();
-    } else if (M5.BtnB.wasPressed() && !swallowBtnB) {
-      ledsSetBreath((ledsBreathIdx() + 1) % BREATH_COUNT);
-      breathStartMs = now;        // restart the cycle on the new pattern
-      breathDirty = true;
-      beep(1500, 40);
-    }
+  } else if (breathingActive()) {
+    breathingButtons(now);
     swallowBtnA = swallowBtnB = swallowBtnC = false;
   } else {
   if (M5.BtnA.pressedFor(600) && !btnALong && !swallowBtnA) {
@@ -1740,11 +1666,10 @@ void loop() {
       if (buddyMode) buddyInvalidate();
       if (clawdMode) clawdInvalidate();
     } else {
-      breathOpen = true; breathStartMs = now; breathDirty = true;
-      beep(1500, 60);
+      breathingEnter(now);
     }
   }
-  }  // end !breathOpen button handling
+  }  // end !breathingActive() button handling
 
   // blink bookkeeping
 
@@ -1803,8 +1728,8 @@ void loop() {
     else spr.fillSprite(0x0000);
     gameDraw();
     spr.pushSprite(spritePushX, spritePushY);
-  } else if (breathOpen) {
-    drawBreath(now);
+  } else if (breathingActive()) {
+    breathingDraw(now, tama.connected, lowBatteryNow);
     spr.pushSprite(spritePushX, spritePushY);
   } else {
   // When an overlay (menu/settings/reset, or the taller approval panel) closes,
@@ -1869,14 +1794,14 @@ void loop() {
     else if (careMenuOpen) drawCareMenu();
     spr.pushSprite(spritePushX, spritePushY);
   }
-  }  // end else (!breathOpen)
+  }  // end else (!breathingActive())
 
   // Face-down nap: dim immediately, pause animations, accumulate sleep time.
   // Skipped during approval — you're holding it to read, not sleeping it.
   // Exit needs sustained not-down so IMU noise at the threshold doesn't
   // bounce brightness between 8 and full every few frames.
   static int8_t faceDownFrames = 0;
-  if (!inPrompt && !breathOpen && !gameActive()) {
+  if (!inPrompt && !breathingActive() && !gameActive()) {
     bool down = isFaceDown();
     if (down)       { if (faceDownFrames < 20) faceDownFrames++; }
     else            { if (faceDownFrames > -10) faceDownFrames--; }
@@ -1899,7 +1824,7 @@ void loop() {
   // millis() not the cached `now`: wake() runs after `now` is captured,
   // so now - lastInteractMs underflows when a button is held → flicker.
   // No auto-off on USB power — clock face wants to stay visible while charging.
-  if (!screenOff && !inPrompt && !_onUsb && !breathOpen && !gameActive()
+  if (!screenOff && !inPrompt && !_onUsb && !breathingActive() && !gameActive()
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
     Axp.SetLDO2(false);
     screenOff = true;
