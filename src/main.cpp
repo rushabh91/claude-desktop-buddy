@@ -73,18 +73,29 @@ bool     breathOpen    = false;
 uint32_t breathStartMs = 0;
 bool     breathDirty   = false;   // force a full repaint (on entry / pattern change)
 
-// Catch mini-game (launched from the care menu). Self-contained screen + LED
-// bar, like breathing mode: A = catch, C = quit. Target = the center LEDs.
+// Mini-games (launched from the care menu). Self-contained screen + LED bar,
+// like breathing mode. C = quit; B = catch / play-again. Two types:
+//   GAME_CATCH — LED cursor sweeps, press B at the center target.
+//   GAME_DANCE — shake the device on each audible beat (IMU rhythm).
+enum { GAME_CATCH = 0, GAME_DANCE = 1 };
 bool     gameOpen     = false;
+uint8_t  gameType     = GAME_CATCH;
 uint8_t  gamePhase    = 0;        // 0 = playing, 1 = game over
 int8_t   gameCursor   = 0;
 int8_t   gameDir      = 1;
-uint16_t gameStreak   = 0;
-uint16_t gameStepMs   = 180;      // cursor step interval; shrinks as you score
+uint16_t gameStreak   = 0;        // score (hits) — shared "best" across both games
+uint16_t gameStepMs   = 180;      // catch: cursor step interval; shrinks as you score
 uint32_t gameNextStep = 0;
 bool     gameNewBest  = false;
 const int8_t  GAME_TGT_LO = 4, GAME_TGT_HI = 5;
 const uint16_t GAME_STEP_START = 180, GAME_STEP_MIN = 60, GAME_STEP_DEC = 12;
+// Shake Dance state.
+uint16_t danceCombo   = 0;
+uint16_t danceBeat    = 0;
+uint16_t danceMisses  = 0;
+uint32_t danceBeatAt  = 0;
+bool     danceShook   = false;
+const uint16_t DANCE_BEAT_MS = 750, DANCE_BEATS = 24, DANCE_MAX_MISS = 4;
 uint8_t infoPage = 0;
 uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
@@ -208,8 +219,8 @@ const char* menuItems[] = { "settings", "do not disturb", "turn off", "help", "a
 const uint8_t MENU_N = 7;
 
 // Care menu (hold-B): feed the pet, play a mini-game, or close.
-const char* careItems[] = { "feed", "play catch", "close" };
-const uint8_t CARE_N = 3;
+const char* careItems[] = { "feed", "play catch", "play dance", "close" };
+const uint8_t CARE_N = 4;
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
@@ -420,7 +431,7 @@ void drawMenu() {
 }
 
 void triggerOneShot(PersonaState s, uint32_t durMs);   // defined below; used by careConfirm
-void gameStart();                                      // defined below; launches Catch
+void gameStart(uint8_t type);                          // defined below; launches a mini-game
 
 void careConfirm() {
   switch (careSel) {
@@ -443,9 +454,14 @@ void careConfirm() {
     case 1:  // play catch
       careMenuOpen = false;
       characterInvalidate();
-      gameStart();
+      gameStart(GAME_CATCH);
       break;
-    case 2:  // close
+    case 2:  // play dance
+      careMenuOpen = false;
+      characterInvalidate();
+      gameStart(GAME_DANCE);
+      break;
+    case 3:  // close
       careMenuOpen = false;
       characterInvalidate();
       break;
@@ -724,7 +740,7 @@ void drawInfo() {
     spr.setTextColor(p.textDim, p.bg); ln("  breathe / back / deny"); y += 4;
     spr.setTextColor(p.text, p.bg);    ln("hold A   menu");
     spr.setTextColor(p.text, p.bg);    ln("hold B   feed & play");
-    spr.setTextColor(p.textDim, p.bg); ln("  game: B catch  C quit"); y += 4;
+    spr.setTextColor(p.textDim, p.bg); ln("  catch:B  dance:shake"); y += 4;
     spr.setTextColor(p.text, p.bg);    ln("Power  tap=off hold=shutdn");
 
   } else if (infoPage == 2) {
@@ -1231,46 +1247,65 @@ static void drawStatusBar(const Palette& p) {
 // bar (sweeping cursor + center target). Top line = streak; bottom = best + hint.
 // Transparent text over the buddy's black band; bottom strip cleared to black.
 static void drawGame() {
+  bool dance = (gameType == GAME_DANCE);
   spr.setTextDatum(TC_DATUM);
   spr.setTextSize(1);
 
+  char t[32];
   if (gamePhase == 0) {
     spr.setTextColor(0xFFFF);                 // white, transparent bg
-    char t[28]; snprintf(t, sizeof(t), "CATCH    streak %u", gameStreak);
+    if (dance) snprintf(t, sizeof(t), "DANCE   hits %u  x%u", gameStreak, danceCombo);
+    else       snprintf(t, sizeof(t), "CATCH    streak %u", gameStreak);
     spr.drawString(t, CX, 6);
+    if (dance) {                              // beat pulse synced to the beep
+      uint32_t since = millis() - (danceBeatAt - DANCE_BEAT_MS);
+      bool on = (danceBeat > 0) && since < 200;
+      spr.setTextColor(on ? GREEN : 0x4208);
+      spr.drawString(on ? "* SHAKE *" : "shake on the beat", CX, 184);
+    }
   } else {
     spr.setTextColor(HOT);
-    char t[28]; snprintf(t, sizeof(t), "MISSED!   streak %u", gameStreak);
+    if (dance) snprintf(t, sizeof(t), "DANCE DONE!  hits %u", gameStreak);
+    else       snprintf(t, sizeof(t), "MISSED!   streak %u", gameStreak);
     spr.drawString(t, CX, 6);
   }
 
   // Bottom strip: clear to black + best/hint footer.
   spr.fillRect(0, 198, W, H - 198, 0x0000);
   char b[44];
+  const char* playhint = dance ? "shake!    C quit" : "B catch   C quit";
   if (gamePhase == 0) {
     spr.setTextColor(0xAD55);                 // light gray
-    snprintf(b, sizeof(b), "best %u      B catch   C quit", statsGameBest());
+    snprintf(b, sizeof(b), "best %u    %s", statsGameBest(), playhint);
   } else if (gameNewBest) {
     spr.setTextColor(GREEN);
-    snprintf(b, sizeof(b), "NEW BEST %u !   B again  C quit", statsGameBest());
+    snprintf(b, sizeof(b), "NEW BEST %u !  B again C quit", statsGameBest());
   } else {
     spr.setTextColor(0xAD55);
-    snprintf(b, sizeof(b), "best %u      B again   C quit", statsGameBest());
+    snprintf(b, sizeof(b), "best %u     B again  C quit", statsGameBest());
   }
   spr.drawString(b, CX, 216);
 
   spr.setTextDatum(TL_DATUM);   // restore default for cursor-based drawing elsewhere
 }
 
-void gameStart() {
+void gameStart(uint8_t type) {
   gameOpen     = true;
+  gameType     = type;
   gamePhase    = 0;
+  gameStreak   = 0;
+  gameNewBest  = false;
+  // catch
   gameCursor   = 0;
   gameDir      = 1;
-  gameStreak   = 0;
   gameStepMs   = GAME_STEP_START;
   gameNextStep = millis();
-  gameNewBest  = false;
+  // dance
+  danceCombo   = 0;
+  danceBeat    = 0;
+  danceMisses  = 0;
+  danceShook   = false;
+  danceBeatAt  = millis() + 1000;   // a beat of lead-in before the first beat
   statsAddBond(1);              // playing together deepens the bond
   statsMarkActivity();          // playing counts as activity for mood
   beep(1500, 60);
@@ -1521,9 +1556,8 @@ void loop() {
   // guide); otherwise it mirrors the persona as an ambient status light — off
   // when the screen is off, napping, or in do-not-disturb. Breathing is user-
   // initiated focus, so it stays lit even in DND.
-  // Catch mini-game: advance the sweeping cursor (bounces at the ends) and hand
-  // the bar to the game renderer. When not playing, release the bar.
-  if (gameOpen) {
+  // Catch: advance the sweeping cursor (bounces at the ends), bar = cursor+target.
+  if (gameOpen && gameType == GAME_CATCH) {
     if (gamePhase == 0 && (int32_t)(now - gameNextStep) >= 0) {
       gameCursor += gameDir;
       if (gameCursor >= LEDS_COUNT - 1) { gameCursor = LEDS_COUNT - 1; gameDir = -1; }
@@ -1531,6 +1565,33 @@ void loop() {
       gameNextStep = now + gameStepMs;
     }
     ledsGameSet(true, gameCursor, GAME_TGT_LO, GAME_TGT_HI);
+  } else if (gameOpen && gameType == GAME_DANCE) {
+    // Shake Dance: a beep marks each beat; shake within the beat to score.
+    if (gamePhase == 0) {
+      if (checkShake()) danceShook = true;          // latch a shake in this beat's window
+      if ((int32_t)(now - danceBeatAt) >= 0) {
+        if (danceBeat > 0) {                         // grade the beat that just ended
+          if (danceShook) {
+            gameStreak++; danceCombo++;
+            ledsFlash(CRGB::Green);
+            beep(1400 + (danceCombo > 12 ? 12 : danceCombo) * 50, 60);
+            statsEnergyBoost(1);                     // dancing energizes
+          } else {
+            danceMisses++; danceCombo = 0;
+            ledsFlash(CRGB::Red);
+          }
+        }
+        if (danceBeat >= DANCE_BEATS || danceMisses >= DANCE_MAX_MISS) {
+          gamePhase = 1;
+          gameNewBest = statsRecordGameScore(gameStreak);
+          if (clawdMode) clawdTriggerScene(gameStreak >= DANCE_BEATS/2 ? CLAWD_RX_WIN : CLAWD_RX_LOSE, 1800);
+        } else {
+          danceBeat++; danceShook = false; danceBeatAt = now + DANCE_BEAT_MS;
+          beep(900, 70);                             // the beat cue — shake now!
+        }
+      }
+    }
+    ledsGameSet(false, 0, 0, 0);
   } else {
     ledsGameSet(false, 0, 0, 0);
   }
@@ -1560,7 +1621,7 @@ void loop() {
   // shake → dizzy + force scenario advance
   if (now - lastShakeCheck > 50) {
     lastShakeCheck = now;
-    if (!menuOpen && !careMenuOpen && !screenOff && checkShake() && (int32_t)(now - oneShotUntil) >= 0) {
+    if (!menuOpen && !careMenuOpen && !gameOpen && !screenOff && checkShake() && (int32_t)(now - oneShotUntil) >= 0) {
       wake();
       triggerOneShot(P_DIZZY, 2000);
       Serial.println("shake: dizzy");
@@ -1645,7 +1706,7 @@ void loop() {
   }
 
   if (gameOpen) {
-    // Catch owns the buttons: B = catch / play again, C = quit to home.
+    // Game owns the buttons: C = quit; B = catch (Catch only) / play again.
     if (M5.BtnC.wasPressed() && !swallowBtnC) {
       statsRecordGameScore(gameStreak);          // bank the run on quit
       gameOpen = false;
@@ -1657,7 +1718,9 @@ void loop() {
       if (clawdMode) clawdInvalidate();
       applyDisplayMode();
     } else if (M5.BtnB.wasPressed() && !swallowBtnB) {
-      if (gamePhase == 0) {
+      if (gamePhase == 1) {
+        gameStart(gameType);                     // play again (same game)
+      } else if (gameType == GAME_CATCH) {       // Catch: B is the catch button
         if (gameCursor >= GAME_TGT_LO && gameCursor <= GAME_TGT_HI) {
           gameStreak++;                          // hit: happy + speed up + rising blip
           gameStepMs = (gameStepMs > GAME_STEP_MIN + GAME_STEP_DEC)
@@ -1673,13 +1736,8 @@ void loop() {
           PLAY_MELODY(MEL_DENY);
           if (clawdMode) clawdTriggerScene(CLAWD_RX_LOSE, 1800);
         }
-      } else {
-        gamePhase = 0;                           // play again
-        gameCursor = 0; gameDir = 1; gameStreak = 0;
-        gameStepMs = GAME_STEP_START; gameNextStep = millis();
-        gameNewBest = false;
-        beep(1500, 50);
       }
+      // Dance while playing: B is ignored (the input is shaking).
     }
     swallowBtnA = swallowBtnB = swallowBtnC = false;
   } else if (breathOpen) {
