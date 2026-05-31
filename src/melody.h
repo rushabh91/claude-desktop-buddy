@@ -11,10 +11,14 @@
 
 struct Note { uint16_t freq; uint16_t ms; };   // freq == 0 → rest
 
-static const Note* _melSeq    = nullptr;
-static uint8_t     _melLen    = 0;
-static uint8_t     _melIdx    = 0;
-static uint32_t    _melNextAt = 0;
+// Mutable playback state is defined in melody.cpp (shared across translation
+// units) so any module can trigger a melody and main.cpp's melodyTick() advances
+// the one shared sequence. The const Note tables below stay header-side (read-
+// only; PLAY_MELODY needs sizeof on the array type).
+extern const Note* _melSeq;
+extern uint8_t     _melLen;
+extern uint8_t     _melIdx;
+extern uint32_t    _melNextAt;
 
 // Event melodies (kept short; ≤ ~5 notes).
 static const Note MEL_CONNECT[]    = {{784, 90}, {1047, 90}, {1319, 130}};            // G5-C6-E6 rising
@@ -34,7 +38,7 @@ static const Note MEL_BEAT[]       = {{900, 80}};                               
 // than bright ones at the same master volume, so a melody can request a louder
 // playback. We snapshot the master volume on play and restore it when the
 // sequence ends (or another melody starts), so the boost never leaks.
-static uint8_t _melVolSaved = 0;   // nonzero while an override is active
+extern uint8_t _melVolSaved;   // nonzero while an override is active (defined in melody.cpp)
 
 inline void _melRestoreVol() {
   if (_melVolSaved) { M5.Speaker.setVolume(_melVolSaved); _melVolSaved = 0; }

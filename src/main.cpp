@@ -1,4 +1,6 @@
 #include <M5StickCPlus.h>
+#include "app_globals.h"
+#include "games.h"
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
@@ -30,17 +32,13 @@ static void startBt() {
 #include "leds.h"
 #include "melody.h"
 #include "buddy_clawd.h"
-const int W = 320, H = 240;   // full landscape panel = the PSRAM sprite size
-const int CX = W / 2;         // 160
-const int CY_BASE = 120;
+// W / H / CX / CY_BASE now live in app_globals.h (shared with the UI modules).
 
 // Where the 135x240 portrait sprite lands on the Fire's larger panel. Computed
 // in setup() once the rotation is set; centers the stick-sized UI.
 static int spritePushX = 0, spritePushY = 0;
 
-// Colors used across multiple UI surfaces
-const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
-const uint16_t PANEL = 0x2104;   // overlay panel background
+// HOT / PANEL now live in app_globals.h (shared with the UI modules).
 
 enum PersonaState { P_SLEEP, P_IDLE, P_BUSY, P_ATTENTION, P_CELEBRATE, P_DIZZY, P_HEART };
 const char* stateNames[] = { "sleep", "idle", "busy", "attention", "celebrate", "dizzy", "heart" };
@@ -73,40 +71,7 @@ bool     breathOpen    = false;
 uint32_t breathStartMs = 0;
 bool     breathDirty   = false;   // force a full repaint (on entry / pattern change)
 
-// Mini-games (launched from the care menu). Self-contained screen + LED bar,
-// like breathing mode. C = quit; B = catch / play-again. Two types:
-//   GAME_CATCH — LED cursor sweeps, press B at the center target.
-//   GAME_DANCE — shake the device on each audible beat (IMU rhythm).
-enum { GAME_CATCH = 0, GAME_DANCE = 1 };
-bool     gameOpen     = false;
-uint8_t  gameType     = GAME_CATCH;
-uint8_t  gamePhase    = 0;        // 0 = playing, 1 = game over
-int8_t   gameCursor   = 0;
-int8_t   gameDir      = 1;
-uint16_t gameStreak   = 0;        // score (hits) — shared "best" across both games
-uint16_t gameStepMs   = 180;      // catch: cursor step interval; shrinks as you score
-uint32_t gameNextStep = 0;
-bool     gameNewBest  = false;
-const int8_t  GAME_TGT_LO = 4, GAME_TGT_HI = 5;
-const uint16_t GAME_STEP_START = 180, GAME_STEP_MIN = 60, GAME_STEP_DEC = 12;
-// Shake Dance state.
-uint16_t danceCombo   = 0;
-uint16_t danceBeat    = 0;
-uint16_t danceMisses  = 0;
-uint32_t danceBeatAt  = 0;
-uint16_t danceBeatMs  = 0;        // current beat interval; starts long, shortens
-bool     danceShook     = false;
-uint32_t danceStillStart = 0;     // millis the current still run began (0 = moving)
-uint16_t danceMaxStill  = 0;      // longest still run within the current beat (ms)
-// A real shake has a rest within the beat (settle→shake→settle); continuous
-// shaking has none. So a beat scores only if it had both a shake AND a still run.
-const uint16_t DANCE_STILL_MS = 100;
-const uint16_t DANCE_BEATS = 24, DANCE_LIVES = 3;
-const uint16_t DANCE_BEAT_START = 3000, DANCE_BEAT_MIN = 480, DANCE_BEAT_DEC = 110;
-// Stillness/shake are judged against a FIXED gravity reference (|accel|≈1g at rest),
-// not the adaptive shakeDelta() baseline — see the dance grader for why.
-const float    DANCE_STILL_G = 0.12f;  // |accel|-1g below this = genuinely still
-const float    DANCE_SHAKE_G = 0.60f;  // |accel|-1g above this = a deliberate shake spike
+// Mini-games (Catch + Shake Dance) now live in games.{h,cpp}.
 uint8_t infoPage = 0;
 uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
@@ -199,7 +164,7 @@ bool     promptDismissed = false;    // B hides the panel until the question cha
 bool     promptTimedOut = false;     // true after PROMPT_TIMEOUT_MS with no response
 bool     promptPanelUp = false;      // approval panel on screen (awaiting or "sent...")
 
-static void beep(uint16_t freq, uint16_t dur) {
+void beep(uint16_t freq, uint16_t dur) {
   if (settings().sound && !settings().dnd) Beep.tone(freq, dur);
 }
 
@@ -442,7 +407,6 @@ void drawMenu() {
 }
 
 void triggerOneShot(PersonaState s, uint32_t durMs);   // defined below; used by careConfirm
-void gameStart(uint8_t type);                          // defined below; launches a mini-game
 
 void careConfirm() {
   switch (careSel) {
@@ -975,7 +939,7 @@ static void drawApproval() {
   }
 }
 
-static void tinyHeart(int x, int y, bool filled, uint16_t col) {
+void tinyHeart(int x, int y, bool filled, uint16_t col) {
   if (filled) {
     spr.fillCircle(x - 2, y, 2, col);
     spr.fillCircle(x + 2, y, 2, col);
@@ -1258,90 +1222,7 @@ static void drawStatusBar(const Palette& p) {
 // canvas and zoom-blitted, so the scaling is smooth and flicker-free.
 // Catch: the gameplay is on the LED bar (sweeping cursor + center target). The
 // screen is a compact HUD — streak, best, and the result on a miss.
-// Catch HUD overlay: drawn ON TOP of the live character (rendered first), so
-// Clawd's idle / happy / confused reactions show through. Gameplay is on the LED
-// bar (sweeping cursor + center target). Top line = streak; bottom = best + hint.
-// Transparent text over the buddy's black band; bottom strip cleared to black.
-static void drawGame() {
-  bool dance = (gameType == GAME_DANCE);
-  spr.setTextDatum(TC_DATUM);
-  spr.setTextSize(1);
-
-  char t[32];
-  if (gamePhase == 0) {
-    spr.setTextColor(0xFFFF);                 // white, transparent bg
-    if (dance) snprintf(t, sizeof(t), "DANCE   hits %u  x%u", gameStreak, danceCombo);
-    else       snprintf(t, sizeof(t), "CATCH    streak %u", gameStreak);
-    spr.drawString(t, CX, 6);
-    if (dance) {
-      // lives (hearts) — empties show a missed beat
-      int lives = (int)DANCE_LIVES - (int)danceMisses; if (lives < 0) lives = 0;
-      for (int i = 0; i < DANCE_LIVES; i++)
-        tinyHeart(CX - 16 + i * 16, 28, i < lives, i < lives ? GREEN : 0x4208);
-      // Shake prompt: stays up for the whole beat window. "SHAKE NOW" until you
-      // shake, then a confirmation until the next beat.
-      if (danceBeat == 0) {
-        spr.setTextColor(0x4208); spr.drawString("get ready...", CX, 184);
-      } else if (danceShook && danceMaxStill >= DANCE_STILL_MS) {
-        spr.setTextColor(GREEN);  spr.drawString("nice!", CX, 184);
-      } else {
-        spr.setTextColor(0xFFE0); spr.drawString("* SHAKE NOW *", CX, 184);
-      }
-    }
-  } else {
-    spr.setTextColor(HOT);
-    if (dance) snprintf(t, sizeof(t), "DANCE DONE!  hits %u", gameStreak);
-    else       snprintf(t, sizeof(t), "MISSED!   streak %u", gameStreak);
-    spr.drawString(t, CX, 6);
-  }
-
-  // Bottom strip: clear to black + best/hint footer.
-  spr.fillRect(0, 198, W, H - 198, 0x0000);
-  char b[44];
-  const char* playhint = dance ? "shake!    C quit" : "B catch   C quit";
-  if (gamePhase == 0) {
-    spr.setTextColor(0xAD55);                 // light gray
-    snprintf(b, sizeof(b), "best %u    %s", statsGameBest(), playhint);
-  } else if (gameNewBest) {
-    spr.setTextColor(GREEN);
-    snprintf(b, sizeof(b), "NEW BEST %u !  B again C quit", statsGameBest());
-  } else {
-    spr.setTextColor(0xAD55);
-    snprintf(b, sizeof(b), "best %u     B again  C quit", statsGameBest());
-  }
-  spr.drawString(b, CX, 216);
-
-  spr.setTextDatum(TL_DATUM);   // restore default for cursor-based drawing elsewhere
-}
-
-void gameStart(uint8_t type) {
-  gameOpen     = true;
-  gameType     = type;
-  gamePhase    = 0;
-  gameStreak   = 0;
-  gameNewBest  = false;
-  // catch
-  gameCursor   = 0;
-  gameDir      = 1;
-  gameStepMs   = GAME_STEP_START;
-  gameNextStep = millis();
-  // dance
-  danceCombo   = 0;
-  danceBeat    = 0;
-  danceMisses  = 0;
-  danceShook   = false;
-  danceStillStart = 0;
-  danceMaxStill = 0;
-  danceBeatMs  = DANCE_BEAT_START;
-  danceBeatAt  = millis() + 1500;   // short intro before the first (slow 3s) beat
-  // Re-seed the shake baseline so the post-game shake-to-dizzy path starts fresh.
-  { float ax, ay, az; M5.Imu.getAccelData(&ax, &ay, &az); accelBaseline = sqrtf(ax*ax + ay*ay + az*az); }
-  statsAddBond(1);              // playing together deepens the bond
-  statsMarkActivity();          // playing counts as activity for mood
-  // idle sprite while playing: catch → walking, dance → grooving
-  if (clawdMode) { clawdSetGameMode(type == GAME_DANCE ? 2 : 1); clawdInvalidate(); }
-  beep(1500, 60);
-}
+// drawGame() / gameStart() now live in games.cpp.
 
 static void drawBreath(uint32_t now) {
   const Palette& p = characterPalette();
@@ -1565,7 +1446,7 @@ void loop() {
   {
     static uint32_t nextBlipAt = 0;
     if (nextBlipAt == 0) nextBlipAt = now + 120000;        // grace: no blip for ~2 min after boot
-    if (clawdMode && !gameOpen && !breathOpen && !screenOff && !menuOpen && !careMenuOpen
+    if (clawdMode && !gameActive() && !breathOpen && !screenOff && !menuOpen && !careMenuOpen
         && baseState == P_IDLE && statsHunger() <= 4
         && (int32_t)(now - nextBlipAt) >= 0 && (int32_t)(now - oneShotUntil) >= 0) {
       clawdTriggerScene(CLAWD_RX_GREET, 1200);
@@ -1588,70 +1469,7 @@ void loop() {
   // guide); otherwise it mirrors the persona as an ambient status light — off
   // when the screen is off, napping, or in do-not-disturb. Breathing is user-
   // initiated focus, so it stays lit even in DND.
-  // Catch: advance the sweeping cursor (bounces at the ends), bar = cursor+target.
-  if (gameOpen && gameType == GAME_CATCH) {
-    if (gamePhase == 0 && (int32_t)(now - gameNextStep) >= 0) {
-      gameCursor += gameDir;
-      if (gameCursor >= LEDS_COUNT - 1) { gameCursor = LEDS_COUNT - 1; gameDir = -1; }
-      else if (gameCursor <= 0)         { gameCursor = 0; gameDir = 1; }
-      gameNextStep = now + gameStepMs;
-    }
-    ledsGameSet(true, gameCursor, GAME_TGT_LO, GAME_TGT_HI);
-  } else if (gameOpen && gameType == GAME_DANCE) {
-    // Shake Dance: a loud beep marks each beat; shake within the beat to score.
-    // Beats start slow (long window) and speed up. 3 lives.
-    if (gamePhase == 0) {
-      // Track the longest still run this beat (a real shake leaves a rest), and
-      // whether a shake spike happened. Graded together at the beat boundary, so
-      // continuous shaking (no rest) misses while a deliberate shake scores.
-      // Judge stillness and shake against a FIXED gravity reference (|accel|≈1g at
-      // rest), NOT the adaptive shakeDelta() baseline. The baseline drifts up under
-      // sustained shaking and would log a fake "rest" mid-shake — re-opening the
-      // continuous-shake loophole. Raw deviation from 1g can't be fooled that way.
-      float ax, ay, az;
-      M5.Imu.getAccelData(&ax, &ay, &az);
-      float g = fabsf(sqrtf(ax*ax + ay*ay + az*az) - 1.0f);
-      if (g < DANCE_STILL_G) {                       // genuinely still
-        if (danceStillStart == 0) danceStillStart = now;
-        uint32_t run = now - danceStillStart;
-        if (run > danceMaxStill) danceMaxStill = (uint16_t)(run > 65535 ? 65535 : run);
-      } else {
-        danceStillStart = 0;                         // moving — reset the still run
-      }
-      if (g > DANCE_SHAKE_G && !danceShook) {         // a deliberate shake spike this beat
-        danceShook = true;
-        if (clawdMode) clawdTriggerScene(CLAWD_RX_WIN, 500);   // Clawd looks happy when shaken
-      }
-      if ((int32_t)(now - danceBeatAt) >= 0) {
-        if (danceBeat > 0) {                         // grade the beat that just ended
-          if (danceShook && danceMaxStill >= DANCE_STILL_MS) {   // shook AND rested = real
-            gameStreak++; danceCombo++;
-            ledsFlash(CRGB::Green);
-            beep(1400 + (danceCombo > 12 ? 12 : danceCombo) * 50, 60);
-            statsEnergyBoost(1);                     // dancing energizes
-          } else {
-            danceMisses++; danceCombo = 0;
-            ledsFlash(CRGB::Red);                    // no shake, or constant shaking → miss
-          }
-        }
-        if (danceBeat >= DANCE_BEATS || danceMisses >= DANCE_LIVES) {
-          gamePhase = 1;
-          gameNewBest = statsRecordGameScore(gameStreak);
-          if (clawdMode) clawdTriggerScene(gameStreak >= DANCE_BEATS/2 ? CLAWD_RX_WIN : CLAWD_RX_LOSE, 1800);
-        } else {
-          danceBeat++; danceShook = false; danceMaxStill = 0; danceStillStart = 0;
-          if (danceBeatMs > DANCE_BEAT_MIN + DANCE_BEAT_DEC) danceBeatMs -= DANCE_BEAT_DEC;
-          else danceBeatMs = DANCE_BEAT_MIN;         // ramp the tempo up over the run
-          danceBeatAt = now + danceBeatMs;
-          PLAY_MELODY_VOL(MEL_BEAT, (uint8_t)min(255, (int)M5.Speaker.getVolume() * 8 / 5));  // loud beat cue
-        }
-      }
-    }
-    ledsGameSet(false, 0, 0, 0);
-  } else {
-    ledsGameSet(false, 0, 0, 0);
-  }
-  clawdSetGameMode(gameOpen ? (gameType == GAME_DANCE ? 2 : 1) : 0);  // dance→grooving, catch→walking
+  gameTick(now);   // mini-game per-frame logic + LED bar (no-op when no game is open)
 
   ledsForceBreath(breathOpen, breathStartMs);
   // A dismissed prompt should stop alerting. The pending session keeps
@@ -1678,7 +1496,7 @@ void loop() {
   // shake → dizzy + force scenario advance
   if (now - lastShakeCheck > 50) {
     lastShakeCheck = now;
-    if (!menuOpen && !careMenuOpen && !gameOpen && !screenOff && checkShake() && (int32_t)(now - oneShotUntil) >= 0) {
+    if (!menuOpen && !careMenuOpen && !gameActive() && !screenOff && checkShake() && (int32_t)(now - oneShotUntil) >= 0) {
       wake();
       triggerOneShot(P_DIZZY, 2000);
       Serial.println("shake: dizzy");
@@ -1713,9 +1531,8 @@ void loop() {
       // A prompt takes priority over a breathing session or a mini-game so it's
       // never missed — auto-exit either back to the approval screen.
       if (breathOpen) { breathOpen = false; M5.Lcd.fillScreen(characterPalette().bg); }
-      if (gameOpen) {
-        statsRecordGameScore(gameStreak);
-        gameOpen = false; ledsGameSet(false, 0, 0, 0);
+      if (gameActive()) {
+        gameBankAndClose();
         M5.Lcd.fillScreen(characterPalette().bg);
       }
       applyDisplayMode();
@@ -1762,40 +1579,10 @@ void loop() {
     }
   }
 
-  if (gameOpen) {
+  if (gameActive()) {
     // Game owns the buttons: C = quit; B = catch (Catch only) / play again.
-    if (M5.BtnC.wasPressed() && !swallowBtnC) {
-      statsRecordGameScore(gameStreak);          // bank the run on quit
-      gameOpen = false;
-      ledsGameSet(false, 0, 0, 0);
-      beep(700, 40);
-      M5.Lcd.fillScreen(characterPalette().bg);
-      characterInvalidate();
-      if (buddyMode) buddyInvalidate();
-      if (clawdMode) clawdInvalidate();
-      applyDisplayMode();
-    } else if (M5.BtnB.wasPressed() && !swallowBtnB) {
-      if (gamePhase == 1) {
-        gameStart(gameType);                     // play again (same game)
-      } else if (gameType == GAME_CATCH) {       // Catch: B is the catch button
-        if (gameCursor >= GAME_TGT_LO && gameCursor <= GAME_TGT_HI) {
-          gameStreak++;                          // hit: happy + speed up + rising blip
-          gameStepMs = (gameStepMs > GAME_STEP_MIN + GAME_STEP_DEC)
-                       ? gameStepMs - GAME_STEP_DEC : GAME_STEP_MIN;
-          ledsFlash(CRGB::Green);
-          beep(1500 + gameStreak * 40, 50);
-          statsEnergyBoost(3);   // a happy win gives a small energy lift
-          if (clawdMode) clawdTriggerScene(CLAWD_RX_WIN, 700);
-        } else {
-          gamePhase = 1;                         // miss: confused + game over
-          gameNewBest = statsRecordGameScore(gameStreak);
-          ledsFlash(CRGB::Red);
-          PLAY_MELODY_VOL(MEL_DENY, (uint8_t)min(255, (int)M5.Speaker.getVolume() * 6 / 5));  // +20% louder
-          if (clawdMode) clawdTriggerScene(CLAWD_RX_LOSE, 1800);
-        }
-      }
-      // Dance while playing: B is ignored (the input is shaking).
-    }
+    if (M5.BtnC.wasPressed() && !swallowBtnC)      gameButtonC();
+    else if (M5.BtnB.wasPressed() && !swallowBtnB) gameButtonB(now);
     swallowBtnA = swallowBtnB = swallowBtnC = false;
   } else if (breathOpen) {
     // Breathing mode owns the buttons: A or C exits, B cycles the pattern.
@@ -2007,14 +1794,14 @@ void loop() {
   if (pk && !lastPasskey) { wake(); beep(1800, 60); }
   lastPasskey = pk;
 
-  if (gameOpen) {
+  if (gameActive()) {
     // Render the live character (idle base) so the win/lose reactions read on
     // screen, then overlay the game HUD on top.
     if (clawdMode) { clawdSetContext(tama.connected, lowBatteryNow, false); clawdTick(P_IDLE); }
     else if (buddyMode) buddyTick(P_IDLE);
     else if (characterLoaded()) { characterSetState(P_IDLE); characterTick(); }
     else spr.fillSprite(0x0000);
-    drawGame();
+    gameDraw();
     spr.pushSprite(spritePushX, spritePushY);
   } else if (breathOpen) {
     drawBreath(now);
@@ -2089,7 +1876,7 @@ void loop() {
   // Exit needs sustained not-down so IMU noise at the threshold doesn't
   // bounce brightness between 8 and full every few frames.
   static int8_t faceDownFrames = 0;
-  if (!inPrompt && !breathOpen && !gameOpen) {
+  if (!inPrompt && !breathOpen && !gameActive()) {
     bool down = isFaceDown();
     if (down)       { if (faceDownFrames < 20) faceDownFrames++; }
     else            { if (faceDownFrames > -10) faceDownFrames--; }
@@ -2112,7 +1899,7 @@ void loop() {
   // millis() not the cached `now`: wake() runs after `now` is captured,
   // so now - lastInteractMs underflows when a button is held → flicker.
   // No auto-off on USB power — clock face wants to stay visible while charging.
-  if (!screenOff && !inPrompt && !_onUsb && !breathOpen && !gameOpen
+  if (!screenOff && !inPrompt && !_onUsb && !breathOpen && !gameActive()
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
     Axp.SetLDO2(false);
     screenOff = true;

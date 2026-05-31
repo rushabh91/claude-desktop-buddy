@@ -17,14 +17,17 @@
 // Mirrors PersonaState in main.cpp (same order). Passed as a plain int.
 enum { LP_SLEEP, LP_IDLE, LP_BUSY, LP_ATTENTION, LP_CELEBRATE, LP_DIZZY, LP_HEART };
 
-static CRGB     _leds[LEDS_COUNT];
-static uint8_t  _ledPersona     = LP_SLEEP;
-static bool     _ledEnabled     = true;
-static uint8_t  _ledBright      = 96;          // global cap (battery-safe)
-static uint32_t _ledFlashUntil  = 0;
-static CRGB     _ledFlashColor   = CRGB::Black;
-static bool     _ledLowBatt      = false;
-static uint32_t _ledLastShow     = 0;
+// Mutable LED state is defined in leds.cpp (shared across translation units) so
+// FastLED binds to the one _leds buffer and any module can drive the bar via the
+// inline helpers below; main.cpp's ledsTick() renders the shared state.
+extern CRGB     _leds[LEDS_COUNT];
+extern uint8_t  _ledPersona;
+extern bool     _ledEnabled;
+extern uint8_t  _ledBright;          // global cap (battery-safe)
+extern uint32_t _ledFlashUntil;
+extern CRGB     _ledFlashColor;
+extern bool     _ledLowBatt;
+extern uint32_t _ledLastShow;
 
 // ───────────────────────── Breathing-exercise pacer ─────────────────────────
 // When idle, the bar guides paced breathing: brightness tracks "lung fullness"
@@ -37,7 +40,7 @@ static const BreathPattern BREATHS[] = {
   { 5000,    0, 5000,    0, "coherent 5-5" },  // resonant/coherent breathing
 };
 static const uint8_t BREATH_COUNT = sizeof(BREATHS) / sizeof(BREATHS[0]);
-static uint8_t _breathIdx = 0;
+extern uint8_t _breathIdx;   // defined in leds.cpp
 
 enum BreathPhase { BR_INHALE, BR_HOLD_FULL, BR_EXHALE, BR_HOLD_EMPTY };
 
@@ -47,7 +50,7 @@ inline const char* ledsBreathName()       { return BREATHS[_breathIdx].name; }
 
 // Brightness 0..255 across the current breath cycle (eased for a natural feel)
 // and which phase we're in (for phase-colored LEDs / on-screen cues).
-static uint8_t _breathLevel(uint32_t now, BreathPhase* phase) {
+inline uint8_t _breathLevel(uint32_t now, BreathPhase* phase) {
   const BreathPattern& b = BREATHS[_breathIdx];
   uint32_t cycle = (uint32_t)b.inhale + b.hold1 + b.exhale + b.hold2;
   if (!cycle) { *phase = BR_HOLD_EMPTY; return 0; }
@@ -63,7 +66,7 @@ static uint8_t _breathLevel(uint32_t now, BreathPhase* phase) {
 // Phase → bar color: cyan-blue on the inhale, indigo/violet on the exhale so
 // the two ramps are told apart by hue (mid-inhale and mid-exhale share a
 // brightness, so color is the only cue); white at the full hold, off when empty.
-static void _renderBreath(uint32_t bt) {
+inline void _renderBreath(uint32_t bt) {
   BreathPhase ph; uint8_t b = _breathLevel(bt, &ph);
   CRGB c;
   switch (ph) {
@@ -78,8 +81,8 @@ static void _renderBreath(uint32_t bt) {
 // Dedicated breathing mode: when forced on, the bar breathes regardless of
 // persona, on a clock that starts at `originMs` so it aligns with the on-
 // screen guide (both call ledsBreathClock()).
-static bool     _breathForce  = false;
-static uint32_t _breathOrigin = 0;
+extern bool     _breathForce;   // defined in leds.cpp
+extern uint32_t _breathOrigin;
 inline void     ledsForceBreath(bool on, uint32_t originMs) { _breathForce = on; _breathOrigin = originMs; }
 inline uint32_t ledsBreathClock(uint32_t now) { return _breathForce ? (now - _breathOrigin) : now; }
 inline uint32_t ledsBreathCycleMs() {
@@ -130,9 +133,9 @@ inline void ledsLowBattery(bool on) { _ledLowBatt = on; }
 
 // Mini-game ("Catch") bar: a dim target zone [tgtLo..tgtHi] with a bright
 // sweeping cursor. While active it owns the bar (over persona, under flash).
-static bool _ledGame    = false;
-static int8_t _ledGameCursor = 0;
-static int8_t _ledGameLo = 4, _ledGameHi = 5;
+extern bool _ledGame;   // defined in leds.cpp
+extern int8_t _ledGameCursor;
+extern int8_t _ledGameLo, _ledGameHi;
 inline void ledsGameSet(bool active, int cursor, int tgtLo, int tgtHi) {
   _ledGame = active; _ledGameCursor = (int8_t)cursor; _ledGameLo = (int8_t)tgtLo; _ledGameHi = (int8_t)tgtHi;
 }
