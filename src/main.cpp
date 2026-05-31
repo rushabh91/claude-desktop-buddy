@@ -98,7 +98,7 @@ uint16_t danceBeatMs  = 0;        // current beat interval; starts long, shorten
 bool     danceShook   = false;
 bool     danceCalm    = false;    // saw a settled moment this beat (anti-continuous-shake)
 const uint16_t DANCE_BEATS = 24, DANCE_LIVES = 3;
-const uint16_t DANCE_BEAT_START = 1000, DANCE_BEAT_MIN = 480, DANCE_BEAT_DEC = 24;
+const uint16_t DANCE_BEAT_START = 3000, DANCE_BEAT_MIN = 480, DANCE_BEAT_DEC = 110;
 uint8_t infoPage = 0;
 uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
@@ -1320,7 +1320,7 @@ void gameStart(uint8_t type) {
   danceShook   = false;
   danceCalm    = false;
   danceBeatMs  = DANCE_BEAT_START;
-  danceBeatAt  = millis() + DANCE_BEAT_START;   // lead-in = first (slow) interval
+  danceBeatAt  = millis() + 1500;   // short intro before the first (slow 3s) beat
   statsAddBond(1);              // playing together deepens the bond
   statsMarkActivity();          // playing counts as activity for mood
   // idle sprite while playing: catch → walking, dance → grooving
