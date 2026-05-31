@@ -69,7 +69,7 @@ static const uint8_t POOL_BREATHING[]  = { CL_IDLE };
 static const uint8_t POOL_SLEEPY[]     = { CL_SLEEPING };   // rate-limited / low energy
 static const uint8_t POOL_FEEDING[]    = { CL_HAPPY };
 static const uint8_t POOL_GAMEWIN[]    = { CL_HAPPY };
-static const uint8_t POOL_GAMELOSE[]   = { CL_DIZZY };
+static const uint8_t POOL_GAMELOSE[]   = { CL_CONFUSED };   // miss → confused, not dizzy
 static const uint8_t POOL_GREET[]      = { CL_HAPPY };
 
 struct Pool { const uint8_t* items; uint8_t n; };

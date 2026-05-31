@@ -72,6 +72,19 @@ uint8_t displayMode = DISP_NORMAL;
 bool     breathOpen    = false;
 uint32_t breathStartMs = 0;
 bool     breathDirty   = false;   // force a full repaint (on entry / pattern change)
+
+// Catch mini-game (launched from the care menu). Self-contained screen + LED
+// bar, like breathing mode: A = catch, C = quit. Target = the center LEDs.
+bool     gameOpen     = false;
+uint8_t  gamePhase    = 0;        // 0 = playing, 1 = game over
+int8_t   gameCursor   = 0;
+int8_t   gameDir      = 1;
+uint16_t gameStreak   = 0;
+uint16_t gameStepMs   = 180;      // cursor step interval; shrinks as you score
+uint32_t gameNextStep = 0;
+bool     gameNewBest  = false;
+const int8_t  GAME_TGT_LO = 4, GAME_TGT_HI = 5;
+const uint16_t GAME_STEP_START = 180, GAME_STEP_MIN = 60, GAME_STEP_DEC = 12;
 uint8_t infoPage = 0;
 uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
@@ -192,9 +205,9 @@ void applyDisplayMode() {
 const char* menuItems[] = { "settings", "do not disturb", "turn off", "help", "about", "demo", "close" };
 const uint8_t MENU_N = 7;
 
-// Care menu (hold-B). Phase 3 ships "feed"; mini-games join in a later phase.
-const char* careItems[] = { "feed", "close" };
-const uint8_t CARE_N = 2;
+// Care menu (hold-B): feed the pet, play a mini-game, or close.
+const char* careItems[] = { "feed", "play catch", "close" };
+const uint8_t CARE_N = 3;
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
@@ -405,6 +418,7 @@ void drawMenu() {
 }
 
 void triggerOneShot(PersonaState s, uint32_t durMs);   // defined below; used by careConfirm
+void gameStart();                                      // defined below; launches Catch
 
 void careConfirm() {
   switch (careSel) {
@@ -414,7 +428,7 @@ void careConfirm() {
       if (clawdMode) clawdInvalidate();
       if (statsHunger() >= 10) {
         // Already full: no munch, no stat change (forgiving). Clawd gets briefly
-        // woozy ("too stuffed") with a soft descending "urp". Works in every
+        // woozy ("too stuffed") with a low playful burp. Works in every
         // character mode via the shared dizzy one-shot.
         triggerOneShot(P_DIZZY, 1500);
         PLAY_MELODY_VOL(MEL_FULL, 140);   // burp is low-pitched; boost so it carries
@@ -424,7 +438,12 @@ void careConfirm() {
         PLAY_MELODY(MEL_FEED);
       }
       break;
-    case 1:  // close
+    case 1:  // play catch
+      careMenuOpen = false;
+      characterInvalidate();
+      gameStart();
+      break;
+    case 2:  // close
       careMenuOpen = false;
       characterInvalidate();
       break;
@@ -1196,6 +1215,56 @@ static void drawStatusBar(const Palette& p) {
 // itself paces the breath: it grows on inhale, holds big at the top, shrinks on
 // exhale, holds small when empty. The buddy is rendered into an offscreen
 // canvas and zoom-blitted, so the scaling is smooth and flicker-free.
+// Catch: the gameplay is on the LED bar (sweeping cursor + center target). The
+// screen is a compact HUD — streak, best, and the result on a miss.
+// Catch HUD overlay: drawn ON TOP of the live character (rendered first), so
+// Clawd's idle / happy / confused reactions show through. Gameplay is on the LED
+// bar (sweeping cursor + center target). Top line = streak; bottom = best + hint.
+// Transparent text over the buddy's black band; bottom strip cleared to black.
+static void drawGame() {
+  spr.setTextDatum(TC_DATUM);
+  spr.setTextSize(1);
+
+  if (gamePhase == 0) {
+    spr.setTextColor(0xFFFF);                 // white, transparent bg
+    char t[28]; snprintf(t, sizeof(t), "CATCH    streak %u", gameStreak);
+    spr.drawString(t, CX, 6);
+  } else {
+    spr.setTextColor(HOT);
+    char t[28]; snprintf(t, sizeof(t), "MISSED!   streak %u", gameStreak);
+    spr.drawString(t, CX, 6);
+  }
+
+  // Bottom strip: clear to black + best/hint footer.
+  spr.fillRect(0, 198, W, H - 198, 0x0000);
+  char b[44];
+  if (gamePhase == 0) {
+    spr.setTextColor(0xAD55);                 // light gray
+    snprintf(b, sizeof(b), "best %u      B catch   C quit", statsGameBest());
+  } else if (gameNewBest) {
+    spr.setTextColor(GREEN);
+    snprintf(b, sizeof(b), "NEW BEST %u !   B again  C quit", statsGameBest());
+  } else {
+    spr.setTextColor(0xAD55);
+    snprintf(b, sizeof(b), "best %u      B again   C quit", statsGameBest());
+  }
+  spr.drawString(b, CX, 216);
+
+  spr.setTextDatum(TL_DATUM);   // restore default for cursor-based drawing elsewhere
+}
+
+void gameStart() {
+  gameOpen     = true;
+  gamePhase    = 0;
+  gameCursor   = 0;
+  gameDir      = 1;
+  gameStreak   = 0;
+  gameStepMs   = GAME_STEP_START;
+  gameNextStep = millis();
+  gameNewBest  = false;
+  beep(1500, 60);
+}
+
 static void drawBreath(uint32_t now) {
   const Palette& p = characterPalette();
   uint32_t bt = ledsBreathClock(now);
@@ -1400,6 +1469,20 @@ void loop() {
   // guide); otherwise it mirrors the persona as an ambient status light — off
   // when the screen is off, napping, or in do-not-disturb. Breathing is user-
   // initiated focus, so it stays lit even in DND.
+  // Catch mini-game: advance the sweeping cursor (bounces at the ends) and hand
+  // the bar to the game renderer. When not playing, release the bar.
+  if (gameOpen) {
+    if (gamePhase == 0 && (int32_t)(now - gameNextStep) >= 0) {
+      gameCursor += gameDir;
+      if (gameCursor >= LEDS_COUNT - 1) { gameCursor = LEDS_COUNT - 1; gameDir = -1; }
+      else if (gameCursor <= 0)         { gameCursor = 0; gameDir = 1; }
+      gameNextStep = now + gameStepMs;
+    }
+    ledsGameSet(true, gameCursor, GAME_TGT_LO, GAME_TGT_HI);
+  } else {
+    ledsGameSet(false, 0, 0, 0);
+  }
+
   ledsForceBreath(breathOpen, breathStartMs);
   // A dismissed prompt should stop alerting. The pending session keeps
   // activeState at P_ATTENTION, but once B is pressed (promptDismissed, sticky)
@@ -1457,8 +1540,14 @@ void loop() {
       // Absorb any in-flight press (e.g. you were navigating Info when the
       // prompt popped) so it doesn't accidentally approve/deny what just appeared.
       swallowBtnA = swallowBtnB = swallowBtnC = true;
-      // A prompt takes priority over a breathing session so it's never missed.
+      // A prompt takes priority over a breathing session or a mini-game so it's
+      // never missed — auto-exit either back to the approval screen.
       if (breathOpen) { breathOpen = false; M5.Lcd.fillScreen(characterPalette().bg); }
+      if (gameOpen) {
+        statsRecordGameScore(gameStreak);
+        gameOpen = false; ledsGameSet(false, 0, 0, 0);
+        M5.Lcd.fillScreen(characterPalette().bg);
+      }
       applyDisplayMode();
       characterInvalidate();
       if (buddyMode) buddyInvalidate();
@@ -1503,7 +1592,44 @@ void loop() {
     }
   }
 
-  if (breathOpen) {
+  if (gameOpen) {
+    // Catch owns the buttons: B = catch / play again, C = quit to home.
+    if (M5.BtnC.wasPressed() && !swallowBtnC) {
+      statsRecordGameScore(gameStreak);          // bank the run on quit
+      gameOpen = false;
+      ledsGameSet(false, 0, 0, 0);
+      beep(700, 40);
+      M5.Lcd.fillScreen(characterPalette().bg);
+      characterInvalidate();
+      if (buddyMode) buddyInvalidate();
+      if (clawdMode) clawdInvalidate();
+      applyDisplayMode();
+    } else if (M5.BtnB.wasPressed() && !swallowBtnB) {
+      if (gamePhase == 0) {
+        if (gameCursor >= GAME_TGT_LO && gameCursor <= GAME_TGT_HI) {
+          gameStreak++;                          // hit: happy + speed up + rising blip
+          gameStepMs = (gameStepMs > GAME_STEP_MIN + GAME_STEP_DEC)
+                       ? gameStepMs - GAME_STEP_DEC : GAME_STEP_MIN;
+          ledsFlash(CRGB::Green);
+          beep(1500 + gameStreak * 40, 50);
+          if (clawdMode) clawdTriggerScene(CLAWD_RX_WIN, 700);
+        } else {
+          gamePhase = 1;                         // miss: confused + game over
+          gameNewBest = statsRecordGameScore(gameStreak);
+          ledsFlash(CRGB::Red);
+          PLAY_MELODY(MEL_DENY);
+          if (clawdMode) clawdTriggerScene(CLAWD_RX_LOSE, 1800);
+        }
+      } else {
+        gamePhase = 0;                           // play again
+        gameCursor = 0; gameDir = 1; gameStreak = 0;
+        gameStepMs = GAME_STEP_START; gameNextStep = millis();
+        gameNewBest = false;
+        beep(1500, 50);
+      }
+    }
+    swallowBtnA = swallowBtnB = swallowBtnC = false;
+  } else if (breathOpen) {
     // Breathing mode owns the buttons: A or C exits, B cycles the pattern.
     if ((M5.BtnA.wasReleased() && !swallowBtnA) || (M5.BtnC.wasPressed() && !swallowBtnC)) {
       breathOpen = false;
@@ -1713,7 +1839,16 @@ void loop() {
   if (pk && !lastPasskey) { wake(); beep(1800, 60); }
   lastPasskey = pk;
 
-  if (breathOpen) {
+  if (gameOpen) {
+    // Render the live character (idle base) so the win/lose reactions read on
+    // screen, then overlay the game HUD on top.
+    if (clawdMode) { clawdSetContext(tama.connected, lowBatteryNow, false); clawdTick(P_IDLE); }
+    else if (buddyMode) buddyTick(P_IDLE);
+    else if (characterLoaded()) { characterSetState(P_IDLE); characterTick(); }
+    else spr.fillSprite(0x0000);
+    drawGame();
+    spr.pushSprite(spritePushX, spritePushY);
+  } else if (breathOpen) {
     drawBreath(now);
     spr.pushSprite(spritePushX, spritePushY);
   } else {
@@ -1786,7 +1921,7 @@ void loop() {
   // Exit needs sustained not-down so IMU noise at the threshold doesn't
   // bounce brightness between 8 and full every few frames.
   static int8_t faceDownFrames = 0;
-  if (!inPrompt && !breathOpen) {
+  if (!inPrompt && !breathOpen && !gameOpen) {
     bool down = isFaceDown();
     if (down)       { if (faceDownFrames < 20) faceDownFrames++; }
     else            { if (faceDownFrames > -10) faceDownFrames--; }
@@ -1807,7 +1942,7 @@ void loop() {
   // millis() not the cached `now`: wake() runs after `now` is captured,
   // so now - lastInteractMs underflows when a button is held → flicker.
   // No auto-off on USB power — clock face wants to stay visible while charging.
-  if (!screenOff && !inPrompt && !_onUsb && !breathOpen
+  if (!screenOff && !inPrompt && !_onUsb && !breathOpen && !gameOpen
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
     Axp.SetLDO2(false);
     screenOff = true;

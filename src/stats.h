@@ -21,6 +21,7 @@ struct Stats {
   uint8_t  level;
   uint32_t tokens;          // cumulative output tokens, drives level
   uint8_t  hunger;          // 0..10 need; up on Claude activity / feed, drifts down idle
+  uint16_t gameBest;        // best mini-game streak
 };
 
 static Stats _stats;
@@ -40,6 +41,7 @@ inline void statsLoad() {
   // content). Per-key Preferences means no struct-layout migration is needed.
   _stats.hunger     = _prefs.getUChar("hunger", 7);
   if (_stats.hunger > 10) _stats.hunger = 7;
+  _stats.gameBest   = _prefs.getUShort("gbest", 0);
   size_t got = _prefs.getBytes("vel", _stats.velocity, sizeof(_stats.velocity));
   if (got != sizeof(_stats.velocity)) memset(_stats.velocity, 0, sizeof(_stats.velocity));
   _prefs.end();
@@ -61,6 +63,7 @@ inline void statsSave() {
   _prefs.putUChar("lvl", _stats.level);
   _prefs.putUInt("tok", _stats.tokens);
   _prefs.putUChar("hunger", _stats.hunger);
+  _prefs.putUShort("gbest", _stats.gameBest);
   _prefs.putBytes("vel", _stats.velocity, sizeof(_stats.velocity));
   _prefs.end();
   _dirty = false;
@@ -213,6 +216,14 @@ inline void statsHungerTick(uint32_t now) {
   if (now - _lastHungerDriftMs < HUNGER_DRIFT_MS)   return;
   _lastHungerDriftMs = now;
   if (_stats.hunger > HUNGER_FLOOR) _stats.hunger--;
+}
+
+// --- Mini-game best streak --------------------------------------------------
+inline uint16_t statsGameBest() { return _stats.gameBest; }
+// Returns true if this score set a new best (persists it as a milestone).
+inline bool statsRecordGameScore(uint16_t score) {
+  if (score > _stats.gameBest) { _stats.gameBest = score; _dirty = true; statsSave(); return true; }
+  return false;
 }
 
 // --- Settings --------------------------------------------------------------

@@ -128,6 +128,15 @@ inline void ledsFlashApprove() { ledsFlash(CRGB::Green); }
 inline void ledsFlashDeny()    { ledsFlash(CRGB::Red); }
 inline void ledsLowBattery(bool on) { _ledLowBatt = on; }
 
+// Mini-game ("Catch") bar: a dim target zone [tgtLo..tgtHi] with a bright
+// sweeping cursor. While active it owns the bar (over persona, under flash).
+static bool _ledGame    = false;
+static int8_t _ledGameCursor = 0;
+static int8_t _ledGameLo = 4, _ledGameHi = 5;
+inline void ledsGameSet(bool active, int cursor, int tgtLo, int tgtHi) {
+  _ledGame = active; _ledGameCursor = (int8_t)cursor; _ledGameLo = (int8_t)tgtLo; _ledGameHi = (int8_t)tgtHi;
+}
+
 inline void ledsTick(uint32_t now) {
   if (now - _ledLastShow < 33) return;           // ~30fps cap; never starve the loop
   _ledLastShow = now;
@@ -139,9 +148,20 @@ inline void ledsTick(uint32_t now) {
     return;
   }
 
-  // One-shot event flash (approve/deny) overrides everything.
+  // One-shot event flash (approve/deny, hit/miss) overrides everything.
   if ((int32_t)(_ledFlashUntil - now) > 0) {
     fill_solid(_leds, LEDS_COUNT, _ledFlashColor);
+    FastLED.show();
+    return;
+  }
+
+  // Mini-game: target zone (dim green) + bright white sweeping cursor.
+  if (_ledGame) {
+    fill_solid(_leds, LEDS_COUNT, CRGB::Black);
+    for (int i = _ledGameLo; i <= _ledGameHi && i < LEDS_COUNT; i++)
+      if (i >= 0) _leds[i] = CRGB(0, 70, 0);
+    if (_ledGameCursor >= 0 && _ledGameCursor < LEDS_COUNT)
+      _leds[_ledGameCursor] = CRGB(255, 255, 255);
     FastLED.show();
     return;
   }
