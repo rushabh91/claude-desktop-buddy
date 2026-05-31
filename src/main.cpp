@@ -933,6 +933,21 @@ static void drawPetStats(const Palette& p) {
   };
   tokFmt("tokens   ", stats().tokens, y + 30);
   tokFmt("today    ", tama.tokensToday, y + 40);
+
+  // Claude usage from the companion. Dim "--" until data arrives, so a Pet
+  // screen with no companion reads as content, not broken/empty.
+  spr.setCursor(6, y + 50);
+  if (tama.sessionPct < 0 && tama.weeklyPct < 0) {
+    spr.setTextColor(p.textDim, p.bg);
+    spr.print("usage    --");
+  } else {
+    uint16_t uc = tama.usageLimited ? HOT : p.textDim;
+    spr.setTextColor(uc, p.bg);
+    spr.printf("usage    S%d%% W%d%%",
+               tama.sessionPct < 0 ? 0 : tama.sessionPct,
+               tama.weeklyPct  < 0 ? 0 : tama.weeklyPct);
+  }
+  spr.setTextColor(p.textDim, p.bg);
 }
 
 static void drawPetHowTo(const Palette& p) {
