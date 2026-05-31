@@ -77,8 +77,11 @@ a keepalive every 10 seconds:
 | `entries`      | Recent transcript lines, newest first (capped to a few)                           |
 | `tokens`       | Cumulative output tokens since the desktop app started                            |
 | `tokens_today` | Output tokens since local midnight (persisted, survives restart)                  |
-| `session_pct`  | *(optional)* Claude Code 5-hour rolling window usage, 0–100. Sent by the usage companion (from the Anthropic usage API `five_hour.utilization`), not the desktop app. |
-| `weekly_pct`   | *(optional)* Claude Code 7-day rolling window usage, 0–100. Sent by the usage companion (`seven_day.utilization`). |
+| `session_pct`   | *(optional)* Claude Code 5-hour rolling window usage, 0–100. Sent by the usage companion (from the Anthropic usage API `five_hour.utilization`), not the desktop app. |
+| `weekly_pct`    | *(optional)* Claude Code 7-day rolling window usage, 0–100. Sent by the usage companion (`seven_day.utilization`). |
+| `session_reset` | *(optional)* Seconds until the 5-hour window resets. Device decrements it live and shows a countdown. |
+| `weekly_reset`  | *(optional)* Seconds until the 7-day window resets. |
+| `rate_limited`  | *(optional)* `true` when actively rate-limited; device shows a red `!` warning. |
 | `prompt`       | Only present when a permission decision is needed. The `id` is what you echo back |
 
 A few useful derived signals: `running > 0` means at least one session is
