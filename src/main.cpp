@@ -96,6 +96,7 @@ uint16_t danceMisses  = 0;
 uint32_t danceBeatAt  = 0;
 uint16_t danceBeatMs  = 0;        // current beat interval; starts long, shortens
 bool     danceShook   = false;
+bool     danceCalm    = false;    // saw a settled moment this beat (anti-continuous-shake)
 const uint16_t DANCE_BEATS = 24, DANCE_LIVES = 3;
 const uint16_t DANCE_BEAT_START = 1000, DANCE_BEAT_MIN = 480, DANCE_BEAT_DEC = 24;
 uint8_t infoPage = 0;
@@ -644,13 +645,18 @@ void triggerOneShot(PersonaState s, uint32_t durMs) {
   oneShotUntil = millis() + durMs;
 }
 
-bool checkShake() {
+// Instantaneous acceleration delta from the slow baseline. Updates the baseline.
+float shakeDelta() {
   float ax, ay, az;
   M5.Imu.getAccelData(&ax, &ay, &az);
   float mag = sqrtf(ax*ax + ay*ay + az*az);
   float delta = fabsf(mag - accelBaseline);
   accelBaseline = accelBaseline * 0.95f + mag * 0.05f;
-  return delta > 0.8f;
+  return delta;
+}
+
+bool checkShake() {
+  return shakeDelta() > 0.8f;
 }
 
 
@@ -1312,6 +1318,7 @@ void gameStart(uint8_t type) {
   danceBeat    = 0;
   danceMisses  = 0;
   danceShook   = false;
+  danceCalm    = false;
   danceBeatMs  = DANCE_BEAT_START;
   danceBeatAt  = millis() + DANCE_BEAT_START;   // lead-in = first (slow) interval
   statsAddBond(1);              // playing together deepens the bond
@@ -1579,7 +1586,11 @@ void loop() {
     // Shake Dance: a loud beep marks each beat; shake within the beat to score.
     // Beats start slow (long window) and speed up. 3 lives.
     if (gamePhase == 0) {
-      if (checkShake() && !danceShook) {             // first shake of this beat
+      // Anti-loophole: a beat counts only as a calm→shake gesture. Continuous
+      // shaking never settles, so it never registers a fresh shake.
+      float d = shakeDelta();
+      if (d < 0.35f) danceCalm = true;               // device settled this beat
+      if (d > 0.9f && danceCalm && !danceShook) {    // a real shake after a calm moment
         danceShook = true;
         if (clawdMode) clawdTriggerScene(CLAWD_RX_WIN, 500);   // Clawd looks happy when shaken
       }
@@ -1600,7 +1611,7 @@ void loop() {
           gameNewBest = statsRecordGameScore(gameStreak);
           if (clawdMode) clawdTriggerScene(gameStreak >= DANCE_BEATS/2 ? CLAWD_RX_WIN : CLAWD_RX_LOSE, 1800);
         } else {
-          danceBeat++; danceShook = false;
+          danceBeat++; danceShook = false; danceCalm = false;
           if (danceBeatMs > DANCE_BEAT_MIN + DANCE_BEAT_DEC) danceBeatMs -= DANCE_BEAT_DEC;
           else danceBeatMs = DANCE_BEAT_MIN;         // ramp the tempo up over the run
           danceBeatAt = now + danceBeatMs;
