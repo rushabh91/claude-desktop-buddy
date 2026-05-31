@@ -38,8 +38,13 @@ void clawdInvalidate();
 // yields to a pending approval (P_ATTENTION), low battery, and link-drop scenes.
 void clawdSetSleepy(bool sleepy);
 
+// Sustained "unwell" state (neglected: hungry / low energy / low mood). Set each
+// loop. Outranks sleepy and the resting persona, yields to approval/low-batt/
+// link-drop. Stand-in sprite today; swap to a dedicated overheated sprite later.
+void clawdSetUnwell(bool unwell);
+
 // Transient one-shot reactions: play for durationMs, then fall back to the
 // persona/context scene. A pending approval (P_ATTENTION) takes precedence and
 // cancels a playing reaction so the device never buries an approval behind a toy.
-enum ClawdReaction { CLAWD_RX_FEED = 0, CLAWD_RX_WIN, CLAWD_RX_LOSE, CLAWD_RX_GREET };
+enum ClawdReaction { CLAWD_RX_FEED = 0, CLAWD_RX_WIN, CLAWD_RX_LOSE, CLAWD_RX_GREET, CLAWD_RX_WAKE };
 void clawdTriggerScene(uint8_t reaction, uint16_t durationMs);

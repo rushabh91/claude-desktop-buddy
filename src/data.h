@@ -77,6 +77,13 @@ static time_t   _clkLocalAtSync = 0;   // local epoch (UTC + tz) at last sync
 static uint32_t _clkSyncMillis  = 0;   // millis() captured at last sync
 inline bool dataRtcValid() { return _rtcValid; }
 
+// Current local epoch (seconds), extrapolated from the last sync. 0 until the
+// first {"time"} sync arrives — callers use that to mean "unknown" (e.g. age).
+inline time_t dataEpochNow() {
+  if (!_rtcValid) return 0;
+  return _clkLocalAtSync + (time_t)((millis() - _clkSyncMillis) / 1000);
+}
+
 // Fill tm/dt with the current local time from the software clock. Returns
 // false (leaving them untouched) until the first sync arrives.
 inline bool dataClockNow(RTC_TimeTypeDef* tm, RTC_DateTypeDef* dt) {

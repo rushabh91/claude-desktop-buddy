@@ -166,7 +166,9 @@ static void wake() {
     Axp.SetLDO2(true);
     applyBrightness();
     screenOff = false;
-    wakeTransitionUntil = millis() + 12000;
+    wakeTransitionUntil = millis() + 1600;       // length of the wake animation
+    // Clawd plays a wake-up animation when the screen comes back from sleep.
+    if (clawdMode) clawdTriggerScene(CLAWD_RX_WAKE, 1600);
   }
   if (dimmed) { applyBrightness(); dimmed = false; }
 }
@@ -721,7 +723,9 @@ void drawInfo() {
     spr.setTextColor(p.text, p.bg);    ln("C (right)");
     spr.setTextColor(p.textDim, p.bg); ln("  breathe / back / deny"); y += 4;
     spr.setTextColor(p.text, p.bg);    ln("hold A   menu");
-    spr.setTextColor(p.text, p.bg);    ln("Power    tap=off, hold=shutdown");
+    spr.setTextColor(p.text, p.bg);    ln("hold B   feed & play");
+    spr.setTextColor(p.textDim, p.bg); ln("  game: B catch  C quit"); y += 4;
+    spr.setTextColor(p.text, p.bg);    ln("Power  tap=off hold=shutdn");
 
   } else if (infoPage == 2) {
     _infoHeader(p, y, "CLAUDE", infoPage);
@@ -987,6 +991,10 @@ static void drawPetStats(const Palette& p) {
   spr.fillRoundRect(6, y - 2, 42, 14, 3, p.body);
   spr.setTextColor(p.bg, p.body);
   spr.setCursor(11, y + 1); spr.printf("Lv %u", stats().level);
+  // Age (days) + bond label fill the empty space to the right of the Lv badge.
+  spr.setTextColor(p.textDim, p.bg);
+  spr.setCursor(56, y + 1);
+  spr.printf("%lud  %s", (unsigned long)statsAgeDays((uint32_t)dataEpochNow()), statsBondLabel());
 
   y += 20;
   spr.setTextColor(p.textDim, p.bg);
@@ -1035,22 +1043,23 @@ static void drawPetHowTo(const Palette& p) {
   y += 12;  // room for the PET header drawn by drawPet()
 
   ln(p.body,    "MOOD");
-  ln(p.textDim, " approve fast = up");
-  ln(p.textDim, " deny lots = down"); gap();
+  ln(p.textDim, " claude/game work");
+  ln(p.textDim, " + fed + rested"); gap();
 
   ln(p.body,    "HUNGER");
-  ln(p.textDim, " claude work feeds");
-  ln(p.textDim, " hold B to feed"); gap();
+  ln(p.textDim, " hold B to feed");
+  ln(p.textDim, " drifts down slowly"); gap();
 
   ln(p.body,    "ENERGY");
-  ln(p.textDim, " face-down to nap");
-  ln(p.textDim, " refills to full"); gap();
+  ln(p.textDim, " tokens tire it");
+  ln(p.textDim, " nap to refill"); gap();
 
   ln(p.textDim, "idle 30s = off");
   ln(p.textDim, "any button = wake"); gap();
 
-  ln(p.textDim, "A: screens  B: page");
+  ln(p.textDim, "A: screens B: page");
   ln(p.textDim, "hold A: menu");
+  ln(p.textDim, "hold B: feed/play");
 }
 
 void drawPet() {
@@ -1262,6 +1271,8 @@ void gameStart() {
   gameStepMs   = GAME_STEP_START;
   gameNextStep = millis();
   gameNewBest  = false;
+  statsAddBond(1);              // playing together deepens the bond
+  statsMarkActivity();          // playing counts as activity for mood
   beep(1500, 60);
 }
 
@@ -1408,6 +1419,9 @@ void setup() {
   }
 
   Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
+
+  // Wake-up animation on startup.
+  if (clawdMode) clawdTriggerScene(CLAWD_RX_WAKE, 1600);
 }
 
 void loop() {
@@ -1426,7 +1440,11 @@ void loop() {
   else if (!nowConn && prevConn) PLAY_MELODY(MEL_DISCONNECT);
   prevConn = nowConn;
 
-  if (statsPollLevelUp()) { PLAY_MELODY(MEL_LEVELUP); triggerOneShot(P_CELEBRATE, 3000); }
+  if (statsPollLevelUp()) { PLAY_MELODY(MEL_LEVELUP); triggerOneShot(P_CELEBRATE, 3000); statsEnergyBoost(20); }
+  // A completed task is a celebration → re-energize (edge-triggered, once per completion).
+  static bool prevCompleted = false;
+  if (tama.recentlyCompleted && !prevCompleted) statsEnergyBoost(20);
+  prevCompleted = tama.recentlyCompleted;
   baseState = derive(tama);
 
   // After waking the screen, hold sleep for 12s so users see the wake-up
@@ -1443,6 +1461,20 @@ void loop() {
     g_animScalePct = (hiU < 0) ? 100 : (uint16_t)(130 - (hiU * 60 / 100));
   }
 
+  // Day/night: at night Clawd winds down a notch (slower animation). Only when
+  // the clock is synced; degrades to no-op otherwise.
+  {
+    RTC_TimeTypeDef _tm; RTC_DateTypeDef _dt;
+    if (dataClockNow(&_tm, &_dt) && (_tm.Hours >= 22 || _tm.Hours < 6)) {
+      uint16_t calm = g_animScalePct + 30;
+      g_animScalePct = calm > 160 ? 160 : calm;
+    }
+  }
+
+  // Age anchor: stamp the first valid clock reading once (persists; coarse day
+  // counter on the Pet screen). Cheap no-op after it's set.
+  if (statsFirstBootEpoch() == 0 && dataRtcValid()) statsStampFirstBoot((uint32_t)dataEpochNow());
+
   // Rate-limit reaction: when Claude is actively rate-limited, Clawd goes
   // visibly sleepy (sustained, via the scene system) and lets out a soft sigh
   // once on the rising edge. Usage unknown (companion off) → not limited → calm.
@@ -1451,8 +1483,28 @@ void loop() {
   prevLimited = tama.usageLimited;
   clawdSetSleepy(tama.usageLimited);
 
-  // Hunger idle-drift (activity-positive; never starves from absence).
+  // Neglect distress: when the pet is hungry, run-down, or low-mood, Clawd looks
+  // overheated. Recovers as soon as you feed / let it rest.
+  clawdSetUnwell(statsHunger() <= 3 || statsEnergyTier() <= 1 || statsMoodTier() == 0);
+
+  // Hunger drifts down over time (feeding is the only way up).
   statsHungerTick(now);
+  // Energy slowly regens while Claude is idle (nap is the fast refill).
+  statsEnergyTick(now);
+
+  // Hungry-and-idle attention blip: when Clawd is peckish (hunger has drifted
+  // low) and Claude is idle, a gentle one-off "hey" invites care. Rate-limited
+  // so it never nags. baseState==P_IDLE already excludes pending approvals/busy.
+  {
+    static uint32_t nextBlipAt = 0;
+    if (nextBlipAt == 0) nextBlipAt = now + 120000;        // grace: no blip for ~2 min after boot
+    if (clawdMode && !gameOpen && !breathOpen && !screenOff && !menuOpen && !careMenuOpen
+        && baseState == P_IDLE && statsHunger() <= 4
+        && (int32_t)(now - nextBlipAt) >= 0 && (int32_t)(now - oneShotUntil) >= 0) {
+      clawdTriggerScene(CLAWD_RX_GREET, 1200);
+      nextBlipAt = now + 240000;                            // at most once every ~4 min
+    }
+  }
 
   // Celebrate chime: ascending two-note ta-da on state entry, once per window.
   // Edge-triggered so it doesn't re-fire every loop tick during the celebrate state.
@@ -1612,6 +1664,7 @@ void loop() {
                        ? gameStepMs - GAME_STEP_DEC : GAME_STEP_MIN;
           ledsFlash(CRGB::Green);
           beep(1500 + gameStreak * 40, 50);
+          statsEnergyBoost(3);   // a happy win gives a small energy lift
           if (clawdMode) clawdTriggerScene(CLAWD_RX_WIN, 700);
         } else {
           gamePhase = 1;                         // miss: confused + game over
@@ -1937,6 +1990,8 @@ void loop() {
     statsOnNapEnd((now - napStartMs) / 1000);
     statsOnWake();
     wake();
+    // Wake-up animation when lifted from a face-down nap.
+    if (clawdMode) { clawdInvalidate(); clawdTriggerScene(CLAWD_RX_WAKE, 1600); }
   }
 
   // millis() not the cached `now`: wake() runs after `now` is captured,

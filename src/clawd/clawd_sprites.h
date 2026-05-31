@@ -26,6 +26,12 @@
 #include "sprite_beacon.h"
 #include "sprite_wizard.h"
 #include "sprite_sweeping.h"
+// Tamagotchi-layer animations (also vendored from clawd-tank via the same tools).
+#include "sprite_eureka.h"
+#include "sprite_grooving.h"
+#include "sprite_hat_mishap.h"
+#include "sprite_overheated.h"
+#include "sprite_wake.h"
 
 // Shared transparent key across all Clawd sprites.
 #define CLAWD_TRANSPARENT_KEY 0x18C5

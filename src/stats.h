@@ -22,6 +22,8 @@ struct Stats {
   uint32_t tokens;          // cumulative output tokens, drives level
   uint8_t  hunger;          // 0..10 need; up on Claude activity / feed, drifts down idle
   uint16_t gameBest;        // best mini-game streak
+  uint8_t  bond;            // 0..100 relationship; rises with care, never resets
+  uint32_t firstBootEpoch;  // local epoch at first RTC sync (age anchor); 0 = unknown
 };
 
 static Stats _stats;
@@ -42,6 +44,9 @@ inline void statsLoad() {
   _stats.hunger     = _prefs.getUChar("hunger", 7);
   if (_stats.hunger > 10) _stats.hunger = 7;
   _stats.gameBest   = _prefs.getUShort("gbest", 0);
+  _stats.bond       = _prefs.getUChar("bond", 0);
+  if (_stats.bond > 100) _stats.bond = 0;
+  _stats.firstBootEpoch = _prefs.getUInt("fboot", 0);
   size_t got = _prefs.getBytes("vel", _stats.velocity, sizeof(_stats.velocity));
   if (got != sizeof(_stats.velocity)) memset(_stats.velocity, 0, sizeof(_stats.velocity));
   _prefs.end();
@@ -64,9 +69,20 @@ inline void statsSave() {
   _prefs.putUInt("tok", _stats.tokens);
   _prefs.putUChar("hunger", _stats.hunger);
   _prefs.putUShort("gbest", _stats.gameBest);
+  _prefs.putUChar("bond", _stats.bond);
+  _prefs.putUInt("fboot", _stats.firstBootEpoch);
   _prefs.putBytes("vel", _stats.velocity, sizeof(_stats.velocity));
   _prefs.end();
   _dirty = false;
+}
+
+// Bond: 0..100 relationship that rises with care (feed, play, fast approvals).
+// Forgiving — it never auto-decays on a wall clock (which can't run across the
+// device's frequent power-offs anyway) and never resets to 0.
+inline void statsAddBond(int8_t d) {
+  int v = (int)_stats.bond + d;
+  if (v < 0) v = 0; if (v > 100) v = 100;
+  if ((uint8_t)v != _stats.bond) { _stats.bond = (uint8_t)v; _dirty = true; }
 }
 
 // Level is token-driven now; approvals only feed mood/velocity.
@@ -75,6 +91,7 @@ inline void statsOnApproval(uint32_t secondsToRespond) {
   _stats.velocity[_stats.velIdx] = (uint16_t)min(secondsToRespond, 65535u);
   _stats.velIdx = (_stats.velIdx + 1) % 8;
   if (_stats.velCount < 8) _stats.velCount++;
+  if (secondsToRespond <= 5) statsAddBond(1);   // a quick response deepens the bond
   _dirty = true; statsSave();
 }
 
@@ -84,11 +101,18 @@ inline void statsOnApproval(uint32_t secondsToRespond) {
 static uint32_t _lastBridgeTokens = 0;
 static bool _tokensSynced = false;       // first-sight latch — see below
 static bool _levelUpPending = false;
-// Hunger is activity-positive: Claude work feeds the pet; idle slowly drifts it
-// toward a floor (never starves from mere absence). millis()-based, so it's
-// reboot-safe and re-derives in RAM — no epoch, no NVS timer writes.
-static uint32_t _lastHungerActivityMs = 0;
-static uint32_t _lastHungerDriftMs    = 0;
+// Activity clock: stamped by Claude token deltas AND game play. Drives mood.
+// millis()-based, RAM-only (reboot-safe; re-derives).
+static uint32_t _lastActivityMs    = 0;
+static uint32_t _lastHungerDriftMs = 0;
+// Energy is a 0..100 RAM meter: token consumption drains it, a nap refills it,
+// and it slowly regens when Claude is idle. RAM-only (volatile; boots at tier 3).
+static int16_t  _energyPts = 60;
+static uint32_t _lastTokenMs = 0;            // last token consumption (idle = no tokens)
+static uint32_t _lastEnergyRegenMs = 0;
+static const uint32_t TOKENS_PER_ENERGY_PT = 2000;   // 1 energy point per ~2000 tokens
+static const uint32_t ENERGY_IDLE_MS  = 2UL * 60 * 1000;   // idle grace before regen
+static const uint32_t ENERGY_REGEN_MS = 2UL * 60 * 1000;   // +1 pt per this long idle (slow)
 
 inline void statsOnBridgeTokens(uint32_t bridgeTotal) {
   // The bridge sends its cumulative total since IT started. We track deltas.
@@ -108,10 +132,12 @@ inline void statsOnBridgeTokens(uint32_t bridgeTotal) {
   _lastBridgeTokens = bridgeTotal;
   if (delta == 0) return;
 
-  // Activity feeds the pet: nudge hunger toward full and stamp the idle clock.
-  // RAM-only here (no extra NVS write) — persisted on the next milestone save.
-  _lastHungerActivityMs = millis();
-  if (_stats.hunger < 10) _stats.hunger++;
+  // Token consumption tires the pet (drains energy) and counts as activity (for
+  // mood). Hunger is NOT touched by tokens — only feeding raises it.
+  _lastActivityMs = millis();
+  _lastTokenMs    = millis();
+  _energyPts -= (int16_t)(delta / TOKENS_PER_ENERGY_PT);
+  if (_energyPts < 0) _energyPts = 0;
 
   uint8_t lvlBefore = (uint8_t)(_stats.tokens / TOKENS_PER_LEVEL);
   _stats.tokens += delta;
@@ -157,65 +183,82 @@ inline uint16_t statsMedianVelocity() {
   return tmp[n/2];
 }
 
-// 0..4 tier. Velocity sets the base; heavy denial ratio drags it down.
-inline uint8_t statsMoodTier() {
-  uint16_t vel = statsMedianVelocity();
-  int8_t tier;
-  if (vel == 0) tier = 2;              // no data: neutral
-  else if (vel < 15) tier = 4;
-  else if (vel < 30) tier = 3;
-  else if (vel < 60) tier = 2;
-  else if (vel < 120) tier = 1;
-  else tier = 0;
-  uint32_t a = _stats.approvals, d = _stats.denials;
-  if (a + d >= 3) {                    // need a few decisions before judging
-    if (d > a) tier -= 2;
-    else if (d * 2 > a) tier -= 1;     // deny rate > 33%
-  }
-  if (tier < 0) tier = 0;
-  return (uint8_t)tier;
+// statsMoodTier() is defined below, after its inputs (hunger/energy) — it is
+// now care-driven, not device-approval-driven (see the note there).
+
+// Energy: token consumption drains the 0..100 meter (see statsOnBridgeTokens);
+// a nap refills it to full. Displayed as a 0..5 tier.
+inline void statsOnWake() { _energyPts = 100; }   // face-down nap → fully rested
+
+// Celebration/happiness moments (task completed, level-up, game win) re-energize.
+inline void statsEnergyBoost(int pts) {
+  _energyPts += (int16_t)pts;
+  if (_energyPts > 100) _energyPts = 100;
+  if (_energyPts < 0)   _energyPts = 0;
 }
 
-// Energy: starts at 3/5 on boot, tops up to full on nap end, drains 1 tier per 2h.
-static uint32_t _lastNapEndMs = 0;
-static uint8_t  _energyAtNap  = 3;
-
-inline void statsOnWake() { _lastNapEndMs = millis(); _energyAtNap = 5; }
-
 inline uint8_t statsEnergyTier() {
-  uint32_t hoursSince = (millis() - _lastNapEndMs) / 3600000;
-  int8_t e = (int8_t)_energyAtNap - (int8_t)(hoursSince / 2);
-  if (e < 0) e = 0; if (e > 5) e = 5;
-  return (uint8_t)e;
+  int t = _energyPts / 20;            // 0..100 → 0..5
+  if (t < 0) t = 0; if (t > 5) t = 5;
+  return (uint8_t)t;
+}
+
+// Slow passive regen while Claude is idle (no token consumption). Call each
+// loop. Nap (statsOnWake) is the fast full refill; this is the gentle recovery.
+inline void statsEnergyTick(uint32_t now) {
+  if (_lastTokenMs != 0 && now - _lastTokenMs < ENERGY_IDLE_MS) return;  // recently consuming
+  if (_lastEnergyRegenMs == 0) _lastEnergyRegenMs = now;
+  if (now - _lastEnergyRegenMs < ENERGY_REGEN_MS) return;
+  _lastEnergyRegenMs = now;
+  if (_energyPts < 100) _energyPts++;
 }
 
 inline uint8_t statsFedProgress() {
   return (uint8_t)((_stats.tokens % TOKENS_PER_LEVEL) / (TOKENS_PER_LEVEL / 10));
 }
 
-// --- Hunger (activity-positive need) ---------------------------------------
-// Idle drift: after IDLE_MS without activity, lose 1 pip per DRIFT_MS, but
-// never below FLOOR — idle makes the pet peckish, not starving (forgiving).
-static const uint32_t HUNGER_IDLE_MS  = 6UL * 60 * 1000;   // grace before drifting
-static const uint32_t HUNGER_DRIFT_MS = 6UL * 60 * 1000;   // -1 pip per this long
-static const uint8_t  HUNGER_FLOOR    = 3;                 // idle never drops below
+// --- Hunger (feed-and-decay need) ------------------------------------------
+// Raised ONLY by feeding; drifts down 1 pip per DRIFT_MS of powered-on time
+// (millis-based, reboot-safe). Tokens do NOT affect hunger.
+static const uint32_t HUNGER_DRIFT_MS = 20UL * 60 * 1000;   // -1 pip per ~20 min
 
 inline uint8_t statsHunger() { return _stats.hunger; }
 
 // Manual feed (user action → milestone, persist).
 inline void statsFeed() {
   _stats.hunger = (_stats.hunger >= 8) ? 10 : _stats.hunger + 2;
-  _lastHungerActivityMs = millis();
+  statsAddBond(2);                 // feeding deepens the bond
   _dirty = true; statsSave();
 }
 
 // Call each loop. RAM-only drift (no NVS write); re-derives after reboot.
 inline void statsHungerTick(uint32_t now) {
-  if (_lastHungerActivityMs == 0) _lastHungerActivityMs = now;  // seed on first tick
-  if (now - _lastHungerActivityMs < HUNGER_IDLE_MS) return;     // recently active
-  if (now - _lastHungerDriftMs < HUNGER_DRIFT_MS)   return;
+  if (_lastHungerDriftMs == 0) _lastHungerDriftMs = now;   // seed on first tick
+  if (now - _lastHungerDriftMs < HUNGER_DRIFT_MS) return;
   _lastHungerDriftMs = now;
-  if (_stats.hunger > HUNGER_FLOOR) _stats.hunger--;
+  if (_stats.hunger > 0) _stats.hunger--;
+}
+
+// Call when the pet "does something" with you (mini-game play). Token deltas
+// already stamp the same clock in statsOnBridgeTokens.
+inline void statsMarkActivity() { _lastActivityMs = millis(); }
+
+// Activity recency → mood points: 2 within 10 min, 1 within 30 min, else 0.
+inline uint8_t statsActivityScore() {
+  if (_lastActivityMs == 0) return 0;
+  uint32_t age = millis() - _lastActivityMs;
+  if (age < 10UL * 60 * 1000) return 2;
+  if (age < 30UL * 60 * 1000) return 1;
+  return 0;
+}
+
+// Mood, 0..4: activity (Claude OR game) up to +2, +1 if well-fed, +1 if rested.
+// Device approvals are NOT an input (auto-mode users rarely approve on-device).
+inline uint8_t statsMoodTier() {
+  int s = statsActivityScore();          // 0..2  (Claude tokens or game play)
+  if (_stats.hunger >= 6)     s += 1;    // fed
+  if (statsEnergyTier() >= 3) s += 1;    // rested
+  return (uint8_t)(s > 4 ? 4 : s);
 }
 
 // --- Mini-game best streak --------------------------------------------------
@@ -224,6 +267,29 @@ inline uint16_t statsGameBest() { return _stats.gameBest; }
 inline bool statsRecordGameScore(uint16_t score) {
   if (score > _stats.gameBest) { _stats.gameBest = score; _dirty = true; statsSave(); return true; }
   return false;
+}
+
+// --- Bond & age -------------------------------------------------------------
+inline uint8_t statsBond() { return _stats.bond; }
+inline const char* statsBondLabel() {
+  uint8_t b = _stats.bond;
+  if (b >= 90) return "best friends";
+  if (b >= 60) return "bonded";
+  if (b >= 30) return "friend";
+  return "new";
+}
+
+// Age anchor: stamp the first valid RTC sync once. nowEpoch from dataEpochNow().
+inline void statsStampFirstBoot(uint32_t nowEpoch) {
+  if (_stats.firstBootEpoch == 0 && nowEpoch != 0) {
+    _stats.firstBootEpoch = nowEpoch; _dirty = true; statsSave();
+  }
+}
+inline uint32_t statsFirstBootEpoch() { return _stats.firstBootEpoch; }
+// Whole days since first boot; 0 if the clock/anchor isn't known yet.
+inline uint32_t statsAgeDays(uint32_t nowEpoch) {
+  if (_stats.firstBootEpoch == 0 || nowEpoch == 0 || nowEpoch < _stats.firstBootEpoch) return 0;
+  return (nowEpoch - _stats.firstBootEpoch) / 86400UL;
 }
 
 // --- Settings --------------------------------------------------------------

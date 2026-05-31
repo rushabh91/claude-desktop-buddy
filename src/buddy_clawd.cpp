@@ -19,29 +19,39 @@ enum {
   CL_TYPING, CL_BUILDING, CL_JUGGLING, CL_CONDUCTING, CL_DIZZY, CL_CONFUSED,
   CL_WALKING, CL_MINI,
   CL_THINKING, CL_DEBUGGER, CL_BEACON, CL_WIZARD, CL_SWEEPING,
+  // Tamagotchi-layer animations.
+  CL_EUREKA, CL_GROOVING, CL_HATMISHAP, CL_OVERHEATED, CL_WAKE,
   CL_COUNT
 };
 
 static const ClawdSprite SPRITES[CL_COUNT] = {
-  { sleeping_rle_data,   sleeping_frame_offsets,   SLEEPING_FRAME_COUNT,   SLEEPING_WIDTH,   SLEEPING_HEIGHT,   1.0f },
-  { idle_rle_data,       idle_frame_offsets,       IDLE_FRAME_COUNT,       IDLE_WIDTH,       IDLE_HEIGHT,       1.0f },
-  { alert_rle_data,      alert_frame_offsets,      ALERT_FRAME_COUNT,      ALERT_WIDTH,      ALERT_HEIGHT,      1.0f },
-  { happy_rle_data,      happy_frame_offsets,      HAPPY_FRAME_COUNT,      HAPPY_WIDTH,      HAPPY_HEIGHT,      1.0f },
-  { going_away_rle_data, going_away_frame_offsets, GOING_AWAY_FRAME_COUNT, GOING_AWAY_WIDTH, GOING_AWAY_HEIGHT, 1.0f },
-  { typing_rle_data,     typing_frame_offsets,     TYPING_FRAME_COUNT,     TYPING_WIDTH,     TYPING_HEIGHT,     1.0f },
-  { building_rle_data,   building_frame_offsets,   BUILDING_FRAME_COUNT,   BUILDING_WIDTH,   BUILDING_HEIGHT,   1.0f },
-  { juggling_rle_data,   juggling_frame_offsets,   JUGGLING_FRAME_COUNT,   JUGGLING_WIDTH,   JUGGLING_HEIGHT,   1.0f },
-  { conducting_rle_data, conducting_frame_offsets, CONDUCTING_FRAME_COUNT, CONDUCTING_WIDTH, CONDUCTING_HEIGHT, 1.0f },
-  { dizzy_rle_data,      dizzy_frame_offsets,      DIZZY_FRAME_COUNT,      DIZZY_WIDTH,      DIZZY_HEIGHT,      1.0f },
-  { confused_rle_data,   confused_frame_offsets,   CONFUSED_FRAME_COUNT,   CONFUSED_WIDTH,   CONFUSED_HEIGHT,   1.0f },
-  { walking_rle_data,    walking_frame_offsets,    WALKING_FRAME_COUNT,    WALKING_WIDTH,    WALKING_HEIGHT,    1.3f },
+  // boost is per-sprite, tuned so Clawd's *body* renders ~the same on-screen
+  // size as `walking` (the reference), measured from the largest connected blob.
+  { sleeping_rle_data,   sleeping_frame_offsets,   SLEEPING_FRAME_COUNT,   SLEEPING_WIDTH,   SLEEPING_HEIGHT,   1.35f },
+  { idle_rle_data,       idle_frame_offsets,       IDLE_FRAME_COUNT,       IDLE_WIDTH,       IDLE_HEIGHT,       1.27f },
+  { alert_rle_data,      alert_frame_offsets,      ALERT_FRAME_COUNT,      ALERT_WIDTH,      ALERT_HEIGHT,      1.27f },
+  { happy_rle_data,      happy_frame_offsets,      HAPPY_FRAME_COUNT,      HAPPY_WIDTH,      HAPPY_HEIGHT,      1.37f },
+  { going_away_rle_data, going_away_frame_offsets, GOING_AWAY_FRAME_COUNT, GOING_AWAY_WIDTH, GOING_AWAY_HEIGHT, 1.59f },
+  { typing_rle_data,     typing_frame_offsets,     TYPING_FRAME_COUNT,     TYPING_WIDTH,     TYPING_HEIGHT,     1.23f },
+  { building_rle_data,   building_frame_offsets,   BUILDING_FRAME_COUNT,   BUILDING_WIDTH,   BUILDING_HEIGHT,   0.84f },
+  { juggling_rle_data,   juggling_frame_offsets,   JUGGLING_FRAME_COUNT,   JUGGLING_WIDTH,   JUGGLING_HEIGHT,   1.05f },
+  { conducting_rle_data, conducting_frame_offsets, CONDUCTING_FRAME_COUNT, CONDUCTING_WIDTH, CONDUCTING_HEIGHT, 1.34f },
+  { dizzy_rle_data,      dizzy_frame_offsets,      DIZZY_FRAME_COUNT,      DIZZY_WIDTH,      DIZZY_HEIGHT,      0.93f },
+  { confused_rle_data,   confused_frame_offsets,   CONFUSED_FRAME_COUNT,   CONFUSED_WIDTH,   CONFUSED_HEIGHT,   1.14f },
+  { walking_rle_data,    walking_frame_offsets,    WALKING_FRAME_COUNT,    WALKING_WIDTH,    WALKING_HEIGHT,    1.30f },
   // mini-clawd is a tiny 10x7 sprite — boost it hard so it reads as a buddy, not a dot.
   { mini_crab_rle_data,  mini_crab_frame_offsets,  MINI_CRAB_FRAME_COUNT,  MINI_CRAB_WIDTH,  MINI_CRAB_HEIGHT,  6.0f },
-  { thinking_rle_data,   thinking_frame_offsets,   THINKING_FRAME_COUNT,   THINKING_WIDTH,   THINKING_HEIGHT,   1.0f },
-  { debugger_rle_data,   debugger_frame_offsets,   DEBUGGER_FRAME_COUNT,   DEBUGGER_WIDTH,   DEBUGGER_HEIGHT,   1.0f },
-  { beacon_rle_data,     beacon_frame_offsets,     BEACON_FRAME_COUNT,     BEACON_WIDTH,     BEACON_HEIGHT,     1.0f },
-  { wizard_rle_data,     wizard_frame_offsets,     WIZARD_FRAME_COUNT,     WIZARD_WIDTH,     WIZARD_HEIGHT,     1.0f },
-  { sweeping_rle_data,   sweeping_frame_offsets,   SWEEPING_FRAME_COUNT,   SWEEPING_WIDTH,   SWEEPING_HEIGHT,   1.0f },
+  { thinking_rle_data,   thinking_frame_offsets,   THINKING_FRAME_COUNT,   THINKING_WIDTH,   THINKING_HEIGHT,   1.20f },
+  { debugger_rle_data,   debugger_frame_offsets,   DEBUGGER_FRAME_COUNT,   DEBUGGER_WIDTH,   DEBUGGER_HEIGHT,   1.15f },
+  { beacon_rle_data,     beacon_frame_offsets,     BEACON_FRAME_COUNT,     BEACON_WIDTH,     BEACON_HEIGHT,     0.50f },
+  { wizard_rle_data,     wizard_frame_offsets,     WIZARD_FRAME_COUNT,     WIZARD_WIDTH,     WIZARD_HEIGHT,     0.84f },
+  { sweeping_rle_data,   sweeping_frame_offsets,   SWEEPING_FRAME_COUNT,   SWEEPING_WIDTH,   SWEEPING_HEIGHT,   1.01f },
+  // New animations: re-cropped tight to the crab + boosted to match walking's body.
+  { eureka_rle_data,     eureka_frame_offsets,     EUREKA_FRAME_COUNT,     EUREKA_WIDTH,     EUREKA_HEIGHT,     1.37f },
+  { grooving_rle_data,   grooving_frame_offsets,   GROOVING_FRAME_COUNT,   GROOVING_WIDTH,   GROOVING_HEIGHT,   1.45f },
+  { hat_mishap_rle_data, hat_mishap_frame_offsets, HAT_MISHAP_FRAME_COUNT, HAT_MISHAP_WIDTH, HAT_MISHAP_HEIGHT, 1.07f },
+  { overheated_rle_data, overheated_frame_offsets, OVERHEATED_FRAME_COUNT, OVERHEATED_WIDTH, OVERHEATED_HEIGHT, 2.0f },
+  { wake_rle_data,       wake_frame_offsets,       WAKE_FRAME_COUNT,       WAKE_WIDTH,       WAKE_HEIGHT,       1.90f },
 };
 
 // ───────────────────────── scenes → pools ─────────────────────────
@@ -52,13 +62,15 @@ enum Scene {
   SC_DISCONNECTED, SC_LOWBATT, SC_BREATHING,
   // Sustained usage-reactive state + transient one-shot reactions (Tamagotchi layer).
   SC_SLEEPY, SC_FEEDING, SC_GAME_WIN, SC_GAME_LOSE, SC_GREET,
+  SC_UNWELL,   // neglected: hungry / low energy / low mood (distress)
+  SC_WAKE,     // startup / nap-end / screen-wake one-shot
   SC_COUNT
 };
 
 static const uint8_t POOL_SLEEP[]      = { CL_SLEEPING };
-static const uint8_t POOL_IDLE[]       = { CL_IDLE, CL_WALKING };
+static const uint8_t POOL_IDLE[]       = { CL_IDLE, CL_WALKING, CL_GROOVING, CL_HATMISHAP };
 static const uint8_t POOL_BUSY[]       = { CL_TYPING, CL_BUILDING, CL_JUGGLING, CL_CONDUCTING, CL_WIZARD, CL_SWEEPING };
-static const uint8_t POOL_ATTENTION[]  = { CL_ALERT, CL_CONFUSED, CL_THINKING, CL_DEBUGGER, CL_BEACON };
+static const uint8_t POOL_ATTENTION[]  = { CL_EUREKA };   // a prompt = "eureka, I have a question!"
 static const uint8_t POOL_CELEBRATE[]  = { CL_HAPPY };
 static const uint8_t POOL_DIZZY[]      = { CL_DIZZY };
 static const uint8_t POOL_HEART[]      = { CL_HAPPY };
@@ -71,13 +83,16 @@ static const uint8_t POOL_FEEDING[]    = { CL_HAPPY };
 static const uint8_t POOL_GAMEWIN[]    = { CL_HAPPY };
 static const uint8_t POOL_GAMELOSE[]   = { CL_CONFUSED };   // miss → confused, not dizzy
 static const uint8_t POOL_GREET[]      = { CL_HAPPY };
+static const uint8_t POOL_UNWELL[]     = { CL_OVERHEATED };   // neglected → overheated
+static const uint8_t POOL_WAKE[]       = { CL_WAKE };         // startup / nap-end / screen-wake
 
 struct Pool { const uint8_t* items; uint8_t n; };
 static const Pool POOLS[SC_COUNT] = {
-  { POOL_SLEEP, 1 }, { POOL_IDLE, 2 }, { POOL_BUSY, 6 }, { POOL_ATTENTION, 5 },
+  { POOL_SLEEP, 1 }, { POOL_IDLE, 4 }, { POOL_BUSY, 6 }, { POOL_ATTENTION, 1 },
   { POOL_CELEBRATE, 1 }, { POOL_DIZZY, 1 }, { POOL_HEART, 1 },
   { POOL_DISCONNECT, 1 }, { POOL_LOWBATT, 1 }, { POOL_BREATHING, 1 },
   { POOL_SLEEPY, 1 }, { POOL_FEEDING, 1 }, { POOL_GAMEWIN, 1 }, { POOL_GAMELOSE, 1 }, { POOL_GREET, 1 },
+  { POOL_UNWELL, 1 }, { POOL_WAKE, 1 },
 };
 
 // Mirrors PersonaState in main.cpp: 0=sleep 1=idle 2=busy 3=attention
@@ -90,11 +105,13 @@ static const Pool POOLS[SC_COUNT] = {
 // breathing > disconnect > low-battery > approval(attention) > sleepy > persona.
 // Approval outranks sleepy so a pending permission is never hidden behind a nap;
 // disconnect/low-battery stay above approval as before (link/power are critical).
-static Scene sceneFor(uint8_t persona, bool showDisconnect, bool lowBatt, bool sleepy, bool breathing) {
+static Scene sceneFor(uint8_t persona, bool showDisconnect, bool lowBatt, bool sleepy,
+                      bool unwell, bool breathing) {
   if (breathing)      return SC_BREATHING;
   if (showDisconnect) return SC_DISCONNECTED;
   if (lowBatt)        return SC_LOWBATT;
-  if (persona == 3)   return SC_ATTENTION;   // approval pending beats sleepy
+  if (persona == 3)   return SC_ATTENTION;   // approval pending beats everything below
+  if (unwell)         return SC_UNWELL;      // neglected (hungry/low energy/mood)
   if (sleepy)         return SC_SLEEPY;
   switch (persona) {
     case 0: return SC_SLEEP;
@@ -125,6 +142,7 @@ static bool      peek           = false;
 static bool      g_lowBatt      = false;
 static bool      g_breathing    = false;
 static bool      g_sleepy       = false;   // sustained: rate-limited / low energy
+static bool      g_unwell       = false;   // sustained: neglected (hungry / low energy / mood)
 static bool      prevConnected  = false;   // edge-detect link drops
 static uint32_t  disconnectUntil = 0;      // going_away shows until this millis()
 static int       reactionScene   = SC_IDLE; // active transient reaction scene
@@ -164,6 +182,7 @@ void clawdInvalidate() {
 }
 
 void clawdSetSleepy(bool sleepy) { g_sleepy = sleepy; }
+void clawdSetUnwell(bool unwell) { g_unwell = unwell; }
 
 void clawdTriggerScene(uint8_t reaction, uint16_t durationMs) {
   switch (reaction) {
@@ -171,6 +190,7 @@ void clawdTriggerScene(uint8_t reaction, uint16_t durationMs) {
     case CLAWD_RX_WIN:   reactionScene = SC_GAME_WIN;  break;
     case CLAWD_RX_LOSE:  reactionScene = SC_GAME_LOSE; break;
     case CLAWD_RX_GREET: reactionScene = SC_GREET;     break;
+    case CLAWD_RX_WAKE:  reactionScene = SC_WAKE;      break;
     default: return;
   }
   reactionUntil = millis() + durationMs;
@@ -229,7 +249,7 @@ static void render(TFT_eSprite* dst, uint8_t persona, bool toHome) {
   uint32_t now = millis();
 
   bool showDisconnect = (int32_t)(now - disconnectUntil) < 0;
-  Scene base = sceneFor(persona, showDisconnect, g_lowBatt, g_sleepy, g_breathing);
+  Scene base = sceneFor(persona, showDisconnect, g_lowBatt, g_sleepy, g_unwell, g_breathing);
   // Precedence: approval / breathing / battery / disconnect outrank a transient
   // reaction; a reaction overrides only the calm/persona scenes (idle, sleepy,
   // busy, celebrate, ...). An approval cancels a playing reaction so it can't
@@ -260,6 +280,8 @@ static void render(TFT_eSprite* dst, uint8_t persona, bool toHome) {
     uint32_t fms;
     if (sc == SC_SLEEPY) {
       fms = 200;   // calm sleep: ignore the usage-driven frantic pacing while sleepy
+    } else if (curSprite >= CL_EUREKA) {
+      fms = 200;   // new animations were captured at ~5 fps — play at their real speed
     } else {
       fms = (uint32_t)FRAME_MS * g_animScalePct / 100;
       if (fms < 40)  fms = 40;
