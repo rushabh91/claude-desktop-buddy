@@ -120,7 +120,7 @@ inline void ledsInit() {
 inline void ledsSetState(uint8_t persona, bool enabled, uint8_t brightLevel) {
   _ledPersona = persona;
   _ledEnabled = enabled;
-  _ledBright  = 30 + brightLevel * 24;           // 30,54,78,102,126 of 255
+  _ledBright  = 20 + brightLevel * 16;           // 20,36,52,68,84 of 255 — battery-trimmed
 }
 
 inline void ledsFlash(const CRGB& c) { _ledFlashColor = c; _ledFlashUntil = millis() + 250; }

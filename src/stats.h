@@ -317,7 +317,7 @@ inline void settingsLoad() {
   _settings.dnd      = _prefs.getBool("s_dnd", false);
   _settings.clockRot = _prefs.getUChar("s_crot", 0);
   if (_settings.clockRot > 2) _settings.clockRot = 0;
-  _settings.bright   = _prefs.getUChar("s_brt", 4);
+  _settings.bright   = _prefs.getUChar("s_brt", 2);   // mid by default (was 4=100%) — battery
   if (_settings.bright > 4) _settings.bright = 4;
   _prefs.end();
 }

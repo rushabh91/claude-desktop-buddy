@@ -162,7 +162,11 @@ static void nextPet() {
   if (clawdMode) clawdInvalidate();
 }
 uint32_t wakeTransitionUntil = 0;
-const uint32_t SCREEN_OFF_MS = 30000;
+const uint32_t SCREEN_OFF_MS = 20000;             // backlight + panel off after this idle
+const uint32_t DIM_AFTER_MS  = 12000;             // pre-blackout dim step
+const uint32_t POWER_OFF_AFTER_OFF_MS = 300000;   // full power-off after 5 min screen-off
+uint32_t screenOffSince = 0;                      // millis() when the screen went off (0 = on)
+bool     chargingNow = false;                     // cached from the ~10s battery poll
 
 bool     napping = false;
 uint32_t napStartMs = 0;
@@ -177,17 +181,28 @@ static bool isFaceDown() {
 }
 
 static void applyBrightness() {
-  int b = 20 + brightLevel * 20;
+  int b = 16 + brightLevel * 16;                        // 16/32/48/64/80% — battery-trimmed
   if (settings().dnd) { b /= 2; if (b < 10) b = 10; }   // DND dims for focus
+  Axp.ScreenBreath(b);
+}
+
+// Pre-blackout idle dim: ~35% of the normal level (floor 12%). Reversed by wake().
+static void applyDimBrightness() {
+  int b = 16 + brightLevel * 16;
+  if (settings().dnd) b /= 2;
+  b = b * 35 / 100;
+  if (b < 12) b = 12;
   Axp.ScreenBreath(b);
 }
 
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
+    M5.Display.wakeup();                          // panel sleep-out (paired with sleep())
     Axp.SetLDO2(true);
     applyBrightness();
     screenOff = false;
+    screenOffSince = 0;
     wakeTransitionUntil = millis() + 1600;       // length of the wake animation
     // Clawd plays a wake-up animation when the screen comes back from sleep.
     if (clawdMode) clawdTriggerScene(CLAWD_RX_WAKE, 1600);
@@ -1671,7 +1686,8 @@ void loop() {
   if (now - lastBattChk > 10000) {
     lastBattChk = now;
     int blvl = M5.Power.getBatteryLevel();
-    lowBatteryNow = (blvl >= 0 && blvl <= 25 && !M5.Power.isCharging());
+    chargingNow = M5.Power.isCharging();           // cached for the auto-power-off guard
+    lowBatteryNow = (blvl >= 0 && blvl <= 25 && !chargingNow);
     ledsLowBattery(lowBatteryNow);
   }
 
@@ -1758,7 +1774,9 @@ void loop() {
       wake();
     } else {
       Axp.SetLDO2(false);
+      M5.Display.sleep();                          // real panel sleep, not just backlight 0
       screenOff = true;
+      screenOffSince = millis();
     }
   }
 
@@ -2112,10 +2130,28 @@ void loop() {
   // millis() not the cached `now`: wake() runs after `now` is captured,
   // so now - lastInteractMs underflows when a button is held → flicker.
   // No auto-off on USB power — clock face wants to stay visible while charging.
-  if (!screenOff && !inPrompt && !_onUsb && !breathOpen && !gameOpen
-      && millis() - lastInteractMs > SCREEN_OFF_MS) {
-    Axp.SetLDO2(false);
-    screenOff = true;
+  uint32_t idleMs = millis() - lastInteractMs;
+  if (!screenOff && !inPrompt && !_onUsb && !breathOpen && !gameOpen) {
+    if (idleMs > SCREEN_OFF_MS) {                  // blackout: cut backlight + sleep the panel
+      Axp.SetLDO2(false);
+      M5.Display.sleep();
+      screenOff = true;
+      screenOffSince = millis();
+    } else if (!napping && !dimmed && idleMs > DIM_AFTER_MS) {
+      applyDimBrightness();                         // pre-blackout dim step
+      dimmed = true;
+    }
+  }
+
+  // Full power-off once the screen has been off a while and nothing's pending.
+  // Incoming approvals wake() the screen (resetting screenOffSince), and the
+  // prompt guard also covers a dismissed-but-still-live request, so we never
+  // drop an approval. Never powers off while charging. On the Fire this deep-
+  // sleeps + lets the IP5306 cut power; a power-button press reboots cleanly.
+  if (screenOff && screenOffSince && !chargingNow
+      && (millis() - screenOffSince > POWER_OFF_AFTER_OFF_MS)
+      && !(tama.promptId[0] && !responseSent && !promptTimedOut)) {
+    Axp.PowerOff();
   }
 
   delay(screenOff ? 100 : 16);
