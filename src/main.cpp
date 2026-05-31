@@ -1235,10 +1235,18 @@ static void drawBreath(uint32_t now) {
   float zoom = 1.0f + (lvl / 255.0f) * 1.3f;          // 1.0 (empty) .. 2.3 (full)
   breathBuddy.pushRotateZoom(&spr, W / 2, 116, 0.0f, zoom, zoom, 0x0000);
 
-  // Phase word + per-phase countdown.
+  // Phase word + per-phase countdown. Cyan-blue on the inhale, indigo/violet on
+  // the exhale so the two halves of the cycle read apart at a glance — the
+  // buddy's zoom alone looks the same mid-inhale and mid-exhale. Matches the bar.
+  uint16_t phaseColor;
+  switch (ph) {
+    case BR_INHALE: phaseColor = spr.color565(90, 190, 255); break;  // cyan-blue
+    case BR_EXHALE: phaseColor = spr.color565(150, 90, 255); break;  // indigo/violet
+    default:        phaseColor = p.text;                     break;  // holds: neutral
+  }
   spr.setTextDatum(TC_DATUM);
   spr.setTextSize(3);
-  spr.setTextColor(p.text, p.bg);
+  spr.setTextColor(phaseColor, p.bg);
   char line[24]; snprintf(line, sizeof(line), "%s %u", label, secs);
   spr.drawString(line, W / 2, 206);
 

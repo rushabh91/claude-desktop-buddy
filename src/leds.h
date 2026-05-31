@@ -60,14 +60,17 @@ static uint8_t _breathLevel(uint32_t now, BreathPhase* phase) {
   *phase = BR_HOLD_EMPTY; return 0;
 }
 
-// Phase → bar color: blue while moving, white at the full hold, off when empty.
+// Phase → bar color: cyan-blue on the inhale, indigo/violet on the exhale so
+// the two ramps are told apart by hue (mid-inhale and mid-exhale share a
+// brightness, so color is the only cue); white at the full hold, off when empty.
 static void _renderBreath(uint32_t bt) {
   BreathPhase ph; uint8_t b = _breathLevel(bt, &ph);
   CRGB c;
   switch (ph) {
+    case BR_INHALE:     c = CRGB(0, b / 3, b);  break;   // cyan-blue, drawing in
+    case BR_EXHALE:     c = CRGB(b / 3, 0, b);  break;   // indigo/violet, releasing
     case BR_HOLD_FULL:  c = CRGB(b, b, b);      break;
-    case BR_HOLD_EMPTY: c = CRGB::Black;        break;
-    default:            c = CRGB(0, b / 3, b);  break;
+    default:            c = CRGB::Black;        break;   // BR_HOLD_EMPTY
   }
   fill_solid(_leds, LEDS_COUNT, c);
 }
