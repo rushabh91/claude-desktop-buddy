@@ -58,6 +58,10 @@ bool    menuOpen    = false;
 uint8_t menuSel     = 0;
 uint8_t brightLevel = 0;           // 0..4 → ScreenBreath 20..100 (boot dim)
 bool    btnALong    = false;
+// Care menu (hold-B from home): feed / play / close. Mirrors the hold-A menu.
+bool    careMenuOpen = false;
+uint8_t careSel      = 0;
+bool    btnBLong     = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
 uint8_t displayMode = DISP_NORMAL;
@@ -187,6 +191,10 @@ void applyDisplayMode() {
 
 const char* menuItems[] = { "settings", "do not disturb", "turn off", "help", "about", "demo", "close" };
 const uint8_t MENU_N = 7;
+
+// Care menu (hold-B). Phase 3 ships "feed"; mini-games join in a later phase.
+const char* careItems[] = { "feed", "close" };
+const uint8_t CARE_N = 2;
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
@@ -392,6 +400,51 @@ void drawMenu() {
       spr.setTextColor(settings().dnd ? GREEN : p.textDim, PANEL);
       spr.print(settings().dnd ? "  on" : "  off");
     } else if (i == 5) spr.print(dataDemo() ? "  on" : "  off");
+  }
+  drawMenuHints(p, mx, mw, my + mh - 12);
+}
+
+void triggerOneShot(PersonaState s, uint32_t durMs);   // defined below; used by careConfirm
+
+void careConfirm() {
+  switch (careSel) {
+    case 0:  // feed. Close the menu first so the reaction is visible.
+      careMenuOpen = false;
+      characterInvalidate();
+      if (clawdMode) clawdInvalidate();
+      if (statsHunger() >= 10) {
+        // Already full: no munch, no stat change (forgiving). Clawd gets briefly
+        // woozy ("too stuffed") with a soft descending "urp". Works in every
+        // character mode via the shared dizzy one-shot.
+        triggerOneShot(P_DIZZY, 1500);
+        PLAY_MELODY_VOL(MEL_FULL, 140);   // burp is low-pitched; boost so it carries
+      } else {
+        statsFeed();
+        if (clawdMode) clawdTriggerScene(CLAWD_RX_FEED, 1800);
+        PLAY_MELODY(MEL_FEED);
+      }
+      break;
+    case 1:  // close
+      careMenuOpen = false;
+      characterInvalidate();
+      break;
+  }
+}
+
+void drawCareMenu() {
+  const Palette& p = characterPalette();
+  int mw = 180, mh = 16 + CARE_N * 14 + MENU_HINT_H;
+  int mx = (W - mw) / 2, my = (H - mh) / 2;
+  spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
+  spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
+  spr.setTextSize(1);
+  for (int i = 0; i < CARE_N; i++) {
+    bool sel = (i == careSel);
+    spr.setTextColor(sel ? p.text : p.textDim, PANEL);
+    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.print(sel ? "> " : "  ");
+    spr.print(careItems[i]);
+    if (i == 0) { spr.setTextColor(p.textDim, PANEL); spr.printf("   %u/10", statsHunger()); }
   }
   drawMenuHints(p, mx, mw, my + mh - 12);
 }
@@ -893,11 +946,11 @@ static void drawPetStats(const Palette& p) {
   for (int i = 0; i < 4; i++) tinyHeart(54 + i * 16, y + 2, i < mood, moodCol);
 
   y += 20;
-  spr.setCursor(6, y - 2); spr.print("fed");
-  uint8_t fed = statsFedProgress();
+  spr.setCursor(6, y - 2); spr.print("hunger");
+  uint8_t hung = statsHunger();
   for (int i = 0; i < 10; i++) {
-    int px = 38 + i * 9;
-    if (i < fed) spr.fillCircle(px, y + 1, 2, p.body);
+    int px = 54 + i * 9;
+    if (i < hung) spr.fillCircle(px, y + 1, 2, p.body);
     else spr.drawCircle(px, y + 1, 2, p.textDim);
   }
 
@@ -966,9 +1019,9 @@ static void drawPetHowTo(const Palette& p) {
   ln(p.textDim, " approve fast = up");
   ln(p.textDim, " deny lots = down"); gap();
 
-  ln(p.body,    "FED");
-  ln(p.textDim, " 50K tokens =");
-  ln(p.textDim, " level up + confetti"); gap();
+  ln(p.body,    "HUNGER");
+  ln(p.textDim, " claude work feeds");
+  ln(p.textDim, " hold B to feed"); gap();
 
   ln(p.body,    "ENERGY");
   ln(p.textDim, " face-down to nap");
@@ -1321,6 +1374,9 @@ void loop() {
   prevLimited = tama.usageLimited;
   clawdSetSleepy(tama.usageLimited);
 
+  // Hunger idle-drift (activity-positive; never starves from absence).
+  statsHungerTick(now);
+
   // Celebrate chime: ascending two-note ta-da on state entry, once per window.
   // Edge-triggered so it doesn't re-fire every loop tick during the celebrate state.
   // Routes through beep() so settings().sound gates both notes.
@@ -1361,7 +1417,7 @@ void loop() {
   // shake → dizzy + force scenario advance
   if (now - lastShakeCheck > 50) {
     lastShakeCheck = now;
-    if (!menuOpen && !screenOff && checkShake() && (int32_t)(now - oneShotUntil) >= 0) {
+    if (!menuOpen && !careMenuOpen && !screenOff && checkShake() && (int32_t)(now - oneShotUntil) >= 0) {
       wake();
       triggerOneShot(P_DIZZY, 2000);
       Serial.println("shake: dizzy");
@@ -1389,7 +1445,7 @@ void loop() {
       // Jump to the approval screen no matter what was open — drawApproval
       // only runs from drawHUD which only runs in DISP_NORMAL.
       displayMode = DISP_NORMAL;
-      menuOpen = settingsOpen = resetOpen = false;
+      menuOpen = settingsOpen = resetOpen = careMenuOpen = false;
       // Absorb any in-flight press (e.g. you were navigating Info when the
       // prompt popped) so it doesn't accidentally approve/deny what just appeared.
       swallowBtnA = swallowBtnB = swallowBtnC = true;
@@ -1465,6 +1521,7 @@ void loop() {
     else {
       menuOpen = !menuOpen;
       menuSel = 0;
+      careMenuOpen = false;   // the two menus are mutually exclusive
       if (!menuOpen) characterInvalidate();
     }
     Serial.println(menuOpen ? "menu open" : "menu close");
@@ -1495,6 +1552,9 @@ void loop() {
       } else if (menuOpen) {
         beep(1800, 30);
         menuSel = (menuSel + 1) % MENU_N;
+      } else if (careMenuOpen) {
+        beep(1800, 30);
+        careSel = (careSel + 1) % CARE_N;
       } else {
         beep(1800, 30);
         displayMode = (displayMode + 1) % DISP_COUNT;
@@ -1505,35 +1565,54 @@ void loop() {
     swallowBtnA = false;
   }
 
-  // BtnB: pet → heart
-  if (M5.BtnB.wasPressed()) {
-    if (swallowBtnB) { swallowBtnB = false; }
-    else
-    if (promptShown) {
-      // Dismiss: hide the panel without deciding. Stays hidden until the
-      // question changes or clears (sticky — see the content edge check).
-      promptDismissed = true;
-      beep(900, 40);
-    } else if (resetOpen) {
-      beep(2400, 30);
-      applyReset(resetSel);
-    } else if (settingsOpen) {
-      beep(2400, 30);
-      applySetting(settingsSel);
-    } else if (menuOpen) {
-      beep(2400, 30);
-      menuConfirm();
-    } else if (displayMode == DISP_INFO) {
-      beep(2400, 30);
-      infoPage = (infoPage + 1) % INFO_PAGES;
-    } else if (displayMode == DISP_PET) {
-      beep(2400, 30);
-      petPage = (petPage + 1) % PET_PAGES;
-      applyDisplayMode();
-    } else {
-      beep(2400, 30);
-      msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
+  // BtnB long-press (600ms) from home opens the care menu. Mirrors BtnA's
+  // press/long/release model so the long-press doesn't double-fire the short
+  // action (which now lands on release, below).
+  if (M5.BtnB.pressedFor(600) && !btnBLong && !swallowBtnB) {
+    btnBLong = true;
+    if (!promptShown && !resetOpen && !settingsOpen && !menuOpen
+        && displayMode == DISP_NORMAL) {
+      beep(800, 60);
+      careMenuOpen = !careMenuOpen;
+      careSel = 0;
+      if (!careMenuOpen) characterInvalidate();
+      Serial.println(careMenuOpen ? "care open" : "care close");
     }
+  }
+  // BtnB short (on release): dismiss prompt / confirm in a menu / page / scroll.
+  if (M5.BtnB.wasReleased()) {
+    if (!btnBLong && !swallowBtnB) {
+      if (promptShown) {
+        // Dismiss: hide the panel without deciding. Stays hidden until the
+        // question changes or clears (sticky — see the content edge check).
+        promptDismissed = true;
+        beep(900, 40);
+      } else if (resetOpen) {
+        beep(2400, 30);
+        applyReset(resetSel);
+      } else if (settingsOpen) {
+        beep(2400, 30);
+        applySetting(settingsSel);
+      } else if (menuOpen) {
+        beep(2400, 30);
+        menuConfirm();
+      } else if (careMenuOpen) {
+        beep(2400, 30);
+        careConfirm();
+      } else if (displayMode == DISP_INFO) {
+        beep(2400, 30);
+        infoPage = (infoPage + 1) % INFO_PAGES;
+      } else if (displayMode == DISP_PET) {
+        beep(2400, 30);
+        petPage = (petPage + 1) % PET_PAGES;
+        applyDisplayMode();
+      } else {
+        beep(2400, 30);
+        msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
+      }
+    }
+    btnBLong = false;
+    swallowBtnB = false;
   }
 
   // BtnC: deny a prompt / move up in menus / back to home / enter breathing.
@@ -1561,6 +1640,9 @@ void loop() {
     } else if (menuOpen) {
       beep(1800, 30);
       menuSel = (menuSel + MENU_N - 1) % MENU_N;
+    } else if (careMenuOpen) {
+      beep(1800, 30);
+      careSel = (careSel + CARE_N - 1) % CARE_N;
     } else if (displayMode != DISP_NORMAL) {
       beep(1800, 30);
       displayMode = DISP_NORMAL;
@@ -1632,7 +1714,7 @@ void loop() {
   // panel behind. Clear the whole sprite once on that transition and force a
   // full buddy redraw.
   static bool wasOverlay = false;
-  bool isOverlay = menuOpen || settingsOpen || resetOpen || promptShown;
+  bool isOverlay = menuOpen || settingsOpen || resetOpen || careMenuOpen || promptShown;
   if (wasOverlay && !isOverlay) {
     spr.fillSprite(characterPalette().bg);
     characterInvalidate();
@@ -1686,6 +1768,7 @@ void loop() {
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();
     else if (menuOpen) drawMenu();
+    else if (careMenuOpen) drawCareMenu();
     spr.pushSprite(spritePushX, spritePushY);
   }
   }  // end else (!breathOpen)

@@ -20,6 +20,7 @@ struct Stats {
   uint8_t  velCount;
   uint8_t  level;
   uint32_t tokens;          // cumulative output tokens, drives level
+  uint8_t  hunger;          // 0..10 need; up on Claude activity / feed, drifts down idle
 };
 
 static Stats _stats;
@@ -35,6 +36,10 @@ inline void statsLoad() {
   _stats.velCount   = _prefs.getUChar("vcnt", 0);
   _stats.level      = _prefs.getUChar("lvl", 0);
   _stats.tokens     = _prefs.getUInt("tok", 0);
+  // New per-key field: a device that predates it just gets the default (7 =
+  // content). Per-key Preferences means no struct-layout migration is needed.
+  _stats.hunger     = _prefs.getUChar("hunger", 7);
+  if (_stats.hunger > 10) _stats.hunger = 7;
   size_t got = _prefs.getBytes("vel", _stats.velocity, sizeof(_stats.velocity));
   if (got != sizeof(_stats.velocity)) memset(_stats.velocity, 0, sizeof(_stats.velocity));
   _prefs.end();
@@ -55,6 +60,7 @@ inline void statsSave() {
   _prefs.putUChar("vcnt", _stats.velCount);
   _prefs.putUChar("lvl", _stats.level);
   _prefs.putUInt("tok", _stats.tokens);
+  _prefs.putUChar("hunger", _stats.hunger);
   _prefs.putBytes("vel", _stats.velocity, sizeof(_stats.velocity));
   _prefs.end();
   _dirty = false;
@@ -75,6 +81,11 @@ inline void statsOnApproval(uint32_t secondsToRespond) {
 static uint32_t _lastBridgeTokens = 0;
 static bool _tokensSynced = false;       // first-sight latch — see below
 static bool _levelUpPending = false;
+// Hunger is activity-positive: Claude work feeds the pet; idle slowly drifts it
+// toward a floor (never starves from mere absence). millis()-based, so it's
+// reboot-safe and re-derives in RAM — no epoch, no NVS timer writes.
+static uint32_t _lastHungerActivityMs = 0;
+static uint32_t _lastHungerDriftMs    = 0;
 
 inline void statsOnBridgeTokens(uint32_t bridgeTotal) {
   // The bridge sends its cumulative total since IT started. We track deltas.
@@ -93,6 +104,11 @@ inline void statsOnBridgeTokens(uint32_t bridgeTotal) {
   uint32_t delta = bridgeTotal - _lastBridgeTokens;
   _lastBridgeTokens = bridgeTotal;
   if (delta == 0) return;
+
+  // Activity feeds the pet: nudge hunger toward full and stamp the idle clock.
+  // RAM-only here (no extra NVS write) — persisted on the next milestone save.
+  _lastHungerActivityMs = millis();
+  if (_stats.hunger < 10) _stats.hunger++;
 
   uint8_t lvlBefore = (uint8_t)(_stats.tokens / TOKENS_PER_LEVEL);
   _stats.tokens += delta;
@@ -172,6 +188,31 @@ inline uint8_t statsEnergyTier() {
 
 inline uint8_t statsFedProgress() {
   return (uint8_t)((_stats.tokens % TOKENS_PER_LEVEL) / (TOKENS_PER_LEVEL / 10));
+}
+
+// --- Hunger (activity-positive need) ---------------------------------------
+// Idle drift: after IDLE_MS without activity, lose 1 pip per DRIFT_MS, but
+// never below FLOOR — idle makes the pet peckish, not starving (forgiving).
+static const uint32_t HUNGER_IDLE_MS  = 6UL * 60 * 1000;   // grace before drifting
+static const uint32_t HUNGER_DRIFT_MS = 6UL * 60 * 1000;   // -1 pip per this long
+static const uint8_t  HUNGER_FLOOR    = 3;                 // idle never drops below
+
+inline uint8_t statsHunger() { return _stats.hunger; }
+
+// Manual feed (user action → milestone, persist).
+inline void statsFeed() {
+  _stats.hunger = (_stats.hunger >= 8) ? 10 : _stats.hunger + 2;
+  _lastHungerActivityMs = millis();
+  _dirty = true; statsSave();
+}
+
+// Call each loop. RAM-only drift (no NVS write); re-derives after reboot.
+inline void statsHungerTick(uint32_t now) {
+  if (_lastHungerActivityMs == 0) _lastHungerActivityMs = now;  // seed on first tick
+  if (now - _lastHungerActivityMs < HUNGER_IDLE_MS) return;     // recently active
+  if (now - _lastHungerDriftMs < HUNGER_DRIFT_MS)   return;
+  _lastHungerDriftMs = now;
+  if (_stats.hunger > HUNGER_FLOOR) _stats.hunger--;
 }
 
 // --- Settings --------------------------------------------------------------
