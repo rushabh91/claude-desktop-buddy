@@ -96,7 +96,8 @@ uint16_t danceMisses  = 0;
 uint32_t danceBeatAt  = 0;
 uint16_t danceBeatMs  = 0;        // current beat interval; starts long, shortens
 bool     danceShook   = false;
-bool     danceCalm    = false;    // saw a settled moment this beat (anti-continuous-shake)
+uint32_t danceMotionMs = 0;       // last time motion was above the calm threshold
+const uint16_t DANCE_CALM_HOLD_MS = 180;   // must be still this long before a shake counts
 const uint16_t DANCE_BEATS = 24, DANCE_LIVES = 3;
 const uint16_t DANCE_BEAT_START = 3000, DANCE_BEAT_MIN = 480, DANCE_BEAT_DEC = 110;
 uint8_t infoPage = 0;
@@ -1322,7 +1323,7 @@ void gameStart(uint8_t type) {
   danceBeat    = 0;
   danceMisses  = 0;
   danceShook   = false;
-  danceCalm    = false;
+  danceMotionMs = millis();
   danceBeatMs  = DANCE_BEAT_START;
   danceBeatAt  = millis() + 1500;   // short intro before the first (slow 3s) beat
   statsAddBond(1);              // playing together deepens the bond
@@ -1590,14 +1591,16 @@ void loop() {
     // Shake Dance: a loud beep marks each beat; shake within the beat to score.
     // Beats start slow (long window) and speed up. 3 lives.
     if (gamePhase == 0) {
-      // Anti-loophole: a beat counts only as a calm→shake gesture. Continuous
-      // shaking never settles, so it never registers a fresh shake.
+      // Anti-loophole: a beat counts only as a SUSTAINED-calm → shake gesture.
+      // An oscillating continuous shake briefly dips low each cycle, so requiring
+      // ~180ms of continuous stillness before the shake defeats it.
       float d = shakeDelta();
-      if (d < 0.35f) danceCalm = true;               // device settled this beat
-      if (d > 0.9f && danceCalm && !danceShook) {    // a real shake after a calm moment
+      bool calm = (now - danceMotionMs) >= DANCE_CALM_HOLD_MS;   // still long enough?
+      if (d > 0.9f && calm && !danceShook) {         // a real shake after settling
         danceShook = true;
         if (clawdMode) clawdTriggerScene(CLAWD_RX_WIN, 500);   // Clawd looks happy when shaken
       }
+      if (d > 0.25f) danceMotionMs = now;            // any motion resets the calm timer
       if ((int32_t)(now - danceBeatAt) >= 0) {
         if (danceBeat > 0) {                         // grade the beat that just ended
           if (danceShook) {
@@ -1615,7 +1618,7 @@ void loop() {
           gameNewBest = statsRecordGameScore(gameStreak);
           if (clawdMode) clawdTriggerScene(gameStreak >= DANCE_BEATS/2 ? CLAWD_RX_WIN : CLAWD_RX_LOSE, 1800);
         } else {
-          danceBeat++; danceShook = false; danceCalm = false;
+          danceBeat++; danceShook = false;
           if (danceBeatMs > DANCE_BEAT_MIN + DANCE_BEAT_DEC) danceBeatMs -= DANCE_BEAT_DEC;
           else danceBeatMs = DANCE_BEAT_MIN;         // ramp the tempo up over the run
           danceBeatAt = now + danceBeatMs;
