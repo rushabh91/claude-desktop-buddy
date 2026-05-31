@@ -43,6 +43,10 @@ void clawdSetSleepy(bool sleepy);
 // link-drop. Stand-in sprite today; swap to a dedicated overheated sprite later.
 void clawdSetUnwell(bool unwell);
 
+// While a mini-game is open, the idle scene uses the `walking` sprite only
+// (clean, consistent size) instead of the random idle variety.
+void clawdSetGameMode(bool on);
+
 // Transient one-shot reactions: play for durationMs, then fall back to the
 // persona/context scene. A pending approval (P_ATTENTION) takes precedence and
 // cancels a playing reaction so the device never buries an approval behind a toy.

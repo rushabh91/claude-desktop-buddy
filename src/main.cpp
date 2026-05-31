@@ -1308,6 +1308,7 @@ void gameStart(uint8_t type) {
   danceBeatAt  = millis() + 1000;   // a beat of lead-in before the first beat
   statsAddBond(1);              // playing together deepens the bond
   statsMarkActivity();          // playing counts as activity for mood
+  if (clawdMode) { clawdSetGameMode(true); clawdInvalidate(); }  // idle → walking only
   beep(1500, 60);
 }
 
@@ -1595,6 +1596,7 @@ void loop() {
   } else {
     ledsGameSet(false, 0, 0, 0);
   }
+  clawdSetGameMode(gameOpen);   // idle uses walking-only while a game is open
 
   ledsForceBreath(breathOpen, breathStartMs);
   // A dismissed prompt should stop alerting. The pending session keeps

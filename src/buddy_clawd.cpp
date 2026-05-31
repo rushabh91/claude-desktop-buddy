@@ -143,6 +143,7 @@ static bool      g_lowBatt      = false;
 static bool      g_breathing    = false;
 static bool      g_sleepy       = false;   // sustained: rate-limited / low energy
 static bool      g_unwell       = false;   // sustained: neglected (hungry / low energy / mood)
+static bool      g_gameMode     = false;   // in a mini-game: idle uses walking only (clean size)
 static bool      prevConnected  = false;   // edge-detect link drops
 static uint32_t  disconnectUntil = 0;      // going_away shows until this millis()
 static int       reactionScene   = SC_IDLE; // active transient reaction scene
@@ -183,6 +184,7 @@ void clawdInvalidate() {
 
 void clawdSetSleepy(bool sleepy) { g_sleepy = sleepy; }
 void clawdSetUnwell(bool unwell) { g_unwell = unwell; }
+void clawdSetGameMode(bool on)   { g_gameMode = on; }
 
 void clawdTriggerScene(uint8_t reaction, uint16_t durationMs) {
   switch (reaction) {
@@ -265,7 +267,8 @@ static void render(TFT_eSprite* dst, uint8_t persona, bool toHome) {
   if (sceneChanged) {
     lastScene = (int)sc;
     const Pool& pl = POOLS[sc];
-    curSprite = pl.items[pl.n > 1 ? (int)(esp_random() % pl.n) : 0];
+    if (g_gameMode && sc == SC_IDLE) curSprite = CL_WALKING;   // mini-games: clean walking only
+    else curSprite = pl.items[pl.n > 1 ? (int)(esp_random() % pl.n) : 0];
     curFrame  = 0;
     nextFrameAt = 0;   // draw immediately
   }
@@ -282,6 +285,8 @@ static void render(TFT_eSprite* dst, uint8_t persona, bool toHome) {
       fms = 200;   // calm sleep: ignore the usage-driven frantic pacing while sleepy
     } else if (curSprite >= CL_EUREKA) {
       fms = 200;   // new animations were captured at ~5 fps — play at their real speed
+    } else if (curSprite == CL_TYPING || curSprite == CL_JUGGLING || curSprite == CL_BUILDING) {
+      fms = 170;   // these read better noticeably slower
     } else {
       fms = (uint32_t)FRAME_MS * g_animScalePct / 100;
       if (fms < 40)  fms = 40;
