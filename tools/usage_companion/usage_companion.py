@@ -408,6 +408,7 @@ async def push_loop():
                         print(f"[companion] → {payload.strip()}", flush=True)
                         try:
                             await client.write_gatt_char(char_uuid, payload.encode(), response=True)
+                            print("[companion] write ack OK", flush=True)
                         except Exception as we:
                             print(f"[companion] write failed: {we}", flush=True)
                             break

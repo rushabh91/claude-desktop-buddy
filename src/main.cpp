@@ -1075,8 +1075,14 @@ static void drawStatusBar(const Palette& p) {
     spr.setTextColor(uc, p.bg);
     spr.setCursor(92, 8);
     spr.print(ub);
-    // Rate-limited warning bang (fits before the DND moon at x=172).
-    if (tama.usageLimited) { spr.setTextColor(HOT, p.bg); spr.print(" !"); }
+    // After the %, a red "!" when rate-limited, else the live 5h-session reset
+    // countdown ("4h"/"45m"). Fits before the DND moon (x=172) at these widths.
+    if (tama.usageLimited) {
+      spr.setTextColor(HOT, p.bg); spr.print(" !");
+    } else if (tama.sessionResetSecs >= 0) {
+      char rb[8]; fmtDur(usageResetLeft(tama.sessionResetSecs), rb, sizeof(rb));
+      spr.setTextColor(p.textDim, p.bg); spr.printf(" %s", rb);
+    }
   }
 
   // Battery: outlined cell + fill + percentage. The Fire's IP5306 only reports
