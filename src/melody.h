@@ -28,6 +28,7 @@ static const Note MEL_FEED[]       = {{1047, 70}, {1319, 70}, {1568, 110}};     
 // Playful burp — too full. Mid band so it carries clearly on the small speaker;
 // fast wobble + a held lower tail for the comedic "burrp".
 static const Note MEL_FULL[]       = {{659, 50}, {494, 55}, {587, 45}, {440, 60}, {523, 55}, {392, 190}};
+static const Note MEL_BEAT[]       = {{900, 80}};                                     // Shake Dance beat cue (played loud)
 
 // Per-melody volume override: low-frequency cues (e.g. the burp) sound quieter
 // than bright ones at the same master volume, so a melody can request a louder

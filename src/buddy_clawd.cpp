@@ -143,7 +143,7 @@ static bool      g_lowBatt      = false;
 static bool      g_breathing    = false;
 static bool      g_sleepy       = false;   // sustained: rate-limited / low energy
 static bool      g_unwell       = false;   // sustained: neglected (hungry / low energy / mood)
-static bool      g_gameMode     = false;   // in a mini-game: idle uses walking only (clean size)
+static uint8_t   g_gameMode     = 0;       // mini-game idle: 0 off, 1 catch(walking), 2 dance(grooving)
 static bool      prevConnected  = false;   // edge-detect link drops
 static uint32_t  disconnectUntil = 0;      // going_away shows until this millis()
 static int       reactionScene   = SC_IDLE; // active transient reaction scene
@@ -184,7 +184,7 @@ void clawdInvalidate() {
 
 void clawdSetSleepy(bool sleepy) { g_sleepy = sleepy; }
 void clawdSetUnwell(bool unwell) { g_unwell = unwell; }
-void clawdSetGameMode(bool on)   { g_gameMode = on; }
+void clawdSetGameMode(uint8_t mode) { g_gameMode = mode; }
 
 void clawdTriggerScene(uint8_t reaction, uint16_t durationMs) {
   switch (reaction) {
@@ -267,7 +267,7 @@ static void render(TFT_eSprite* dst, uint8_t persona, bool toHome) {
   if (sceneChanged) {
     lastScene = (int)sc;
     const Pool& pl = POOLS[sc];
-    if (g_gameMode && sc == SC_IDLE) curSprite = CL_WALKING;   // mini-games: clean walking only
+    if (g_gameMode && sc == SC_IDLE) curSprite = (g_gameMode == 2) ? CL_GROOVING : CL_WALKING;
     else curSprite = pl.items[pl.n > 1 ? (int)(esp_random() % pl.n) : 0];
     curFrame  = 0;
     nextFrameAt = 0;   // draw immediately

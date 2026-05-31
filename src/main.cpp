@@ -94,8 +94,10 @@ uint16_t danceCombo   = 0;
 uint16_t danceBeat    = 0;
 uint16_t danceMisses  = 0;
 uint32_t danceBeatAt  = 0;
+uint16_t danceBeatMs  = 0;        // current beat interval; starts long, shortens
 bool     danceShook   = false;
-const uint16_t DANCE_BEAT_MS = 750, DANCE_BEATS = 24, DANCE_MAX_MISS = 4;
+const uint16_t DANCE_BEATS = 24, DANCE_LIVES = 3;
+const uint16_t DANCE_BEAT_START = 1000, DANCE_BEAT_MIN = 480, DANCE_BEAT_DEC = 24;
 uint8_t infoPage = 0;
 uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
@@ -1257,8 +1259,13 @@ static void drawGame() {
     if (dance) snprintf(t, sizeof(t), "DANCE   hits %u  x%u", gameStreak, danceCombo);
     else       snprintf(t, sizeof(t), "CATCH    streak %u", gameStreak);
     spr.drawString(t, CX, 6);
-    if (dance) {                              // beat pulse synced to the beep
-      uint32_t since = millis() - (danceBeatAt - DANCE_BEAT_MS);
+    if (dance) {
+      // lives (hearts) — empties show a missed beat
+      int lives = (int)DANCE_LIVES - (int)danceMisses; if (lives < 0) lives = 0;
+      for (int i = 0; i < DANCE_LIVES; i++)
+        tinyHeart(CX - 16 + i * 16, 28, i < lives, i < lives ? GREEN : 0x4208);
+      // beat pulse synced to the beep
+      uint32_t since = millis() - (danceBeatAt - danceBeatMs);
       bool on = (danceBeat > 0) && since < 200;
       spr.setTextColor(on ? GREEN : 0x4208);
       spr.drawString(on ? "* SHAKE *" : "shake on the beat", CX, 184);
@@ -1305,10 +1312,12 @@ void gameStart(uint8_t type) {
   danceBeat    = 0;
   danceMisses  = 0;
   danceShook   = false;
-  danceBeatAt  = millis() + 1000;   // a beat of lead-in before the first beat
+  danceBeatMs  = DANCE_BEAT_START;
+  danceBeatAt  = millis() + DANCE_BEAT_START;   // lead-in = first (slow) interval
   statsAddBond(1);              // playing together deepens the bond
   statsMarkActivity();          // playing counts as activity for mood
-  if (clawdMode) { clawdSetGameMode(true); clawdInvalidate(); }  // idle → walking only
+  // idle sprite while playing: catch → walking, dance → grooving
+  if (clawdMode) { clawdSetGameMode(type == GAME_DANCE ? 2 : 1); clawdInvalidate(); }
   beep(1500, 60);
 }
 
@@ -1567,9 +1576,13 @@ void loop() {
     }
     ledsGameSet(true, gameCursor, GAME_TGT_LO, GAME_TGT_HI);
   } else if (gameOpen && gameType == GAME_DANCE) {
-    // Shake Dance: a beep marks each beat; shake within the beat to score.
+    // Shake Dance: a loud beep marks each beat; shake within the beat to score.
+    // Beats start slow (long window) and speed up. 3 lives.
     if (gamePhase == 0) {
-      if (checkShake()) danceShook = true;          // latch a shake in this beat's window
+      if (checkShake() && !danceShook) {             // first shake of this beat
+        danceShook = true;
+        if (clawdMode) clawdTriggerScene(CLAWD_RX_WIN, 500);   // Clawd looks happy when shaken
+      }
       if ((int32_t)(now - danceBeatAt) >= 0) {
         if (danceBeat > 0) {                         // grade the beat that just ended
           if (danceShook) {
@@ -1579,16 +1592,19 @@ void loop() {
             statsEnergyBoost(1);                     // dancing energizes
           } else {
             danceMisses++; danceCombo = 0;
-            ledsFlash(CRGB::Red);
+            ledsFlash(CRGB::Red);                    // missed → lose a life (shown on screen)
           }
         }
-        if (danceBeat >= DANCE_BEATS || danceMisses >= DANCE_MAX_MISS) {
+        if (danceBeat >= DANCE_BEATS || danceMisses >= DANCE_LIVES) {
           gamePhase = 1;
           gameNewBest = statsRecordGameScore(gameStreak);
           if (clawdMode) clawdTriggerScene(gameStreak >= DANCE_BEATS/2 ? CLAWD_RX_WIN : CLAWD_RX_LOSE, 1800);
         } else {
-          danceBeat++; danceShook = false; danceBeatAt = now + DANCE_BEAT_MS;
-          beep(900, 70);                             // the beat cue — shake now!
+          danceBeat++; danceShook = false;
+          if (danceBeatMs > DANCE_BEAT_MIN + DANCE_BEAT_DEC) danceBeatMs -= DANCE_BEAT_DEC;
+          else danceBeatMs = DANCE_BEAT_MIN;         // ramp the tempo up over the run
+          danceBeatAt = now + danceBeatMs;
+          PLAY_MELODY_VOL(MEL_BEAT, (uint8_t)min(255, (int)M5.Speaker.getVolume() * 8 / 5));  // loud beat cue
         }
       }
     }
@@ -1596,7 +1612,7 @@ void loop() {
   } else {
     ledsGameSet(false, 0, 0, 0);
   }
-  clawdSetGameMode(gameOpen);   // idle uses walking-only while a game is open
+  clawdSetGameMode(gameOpen ? (gameType == GAME_DANCE ? 2 : 1) : 0);  // dance→grooving, catch→walking
 
   ledsForceBreath(breathOpen, breathStartMs);
   // A dismissed prompt should stop alerting. The pending session keeps
@@ -1735,7 +1751,7 @@ void loop() {
           gamePhase = 1;                         // miss: confused + game over
           gameNewBest = statsRecordGameScore(gameStreak);
           ledsFlash(CRGB::Red);
-          PLAY_MELODY(MEL_DENY);
+          PLAY_MELODY_VOL(MEL_DENY, (uint8_t)min(255, (int)M5.Speaker.getVolume() * 6 / 5));  // +20% louder
           if (clawdMode) clawdTriggerScene(CLAWD_RX_LOSE, 1800);
         }
       }
