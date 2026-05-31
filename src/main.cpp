@@ -1270,11 +1270,15 @@ static void drawGame() {
       int lives = (int)DANCE_LIVES - (int)danceMisses; if (lives < 0) lives = 0;
       for (int i = 0; i < DANCE_LIVES; i++)
         tinyHeart(CX - 16 + i * 16, 28, i < lives, i < lives ? GREEN : 0x4208);
-      // beat pulse synced to the beep
-      uint32_t since = millis() - (danceBeatAt - danceBeatMs);
-      bool on = (danceBeat > 0) && since < 200;
-      spr.setTextColor(on ? GREEN : 0x4208);
-      spr.drawString(on ? "* SHAKE *" : "shake on the beat", CX, 184);
+      // Shake prompt: stays up for the whole beat window. "SHAKE NOW" until you
+      // shake, then a confirmation until the next beat.
+      if (danceBeat == 0) {
+        spr.setTextColor(0x4208); spr.drawString("get ready...", CX, 184);
+      } else if (danceShook) {
+        spr.setTextColor(GREEN);  spr.drawString("nice!", CX, 184);
+      } else {
+        spr.setTextColor(0xFFE0); spr.drawString("* SHAKE NOW *", CX, 184);
+      }
     }
   } else {
     spr.setTextColor(HOT);
