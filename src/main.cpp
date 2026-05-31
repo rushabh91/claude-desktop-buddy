@@ -1298,6 +1298,14 @@ void loop() {
     g_animScalePct = (hiU < 0) ? 100 : (uint16_t)(130 - (hiU * 60 / 100));
   }
 
+  // Rate-limit reaction: when Claude is actively rate-limited, Clawd goes
+  // visibly sleepy (sustained, via the scene system) and lets out a soft sigh
+  // once on the rising edge. Usage unknown (companion off) → not limited → calm.
+  static bool prevLimited = false;
+  if (tama.usageLimited && !prevLimited) PLAY_MELODY(MEL_SIGH);
+  prevLimited = tama.usageLimited;
+  clawdSetSleepy(tama.usageLimited);
+
   // Celebrate chime: ascending two-note ta-da on state entry, once per window.
   // Edge-triggered so it doesn't re-fire every loop tick during the celebrate state.
   // Routes through beep() so settings().sound gates both notes.

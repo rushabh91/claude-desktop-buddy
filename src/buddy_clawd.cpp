@@ -49,7 +49,10 @@ static const ClawdSprite SPRITES[CL_COUNT] = {
 // pool of one or more sprites; multi-entry pools pick a random variant per entry.
 enum Scene {
   SC_SLEEP, SC_IDLE, SC_BUSY, SC_ATTENTION, SC_CELEBRATE, SC_DIZZY, SC_HEART,
-  SC_DISCONNECTED, SC_LOWBATT, SC_BREATHING, SC_COUNT
+  SC_DISCONNECTED, SC_LOWBATT, SC_BREATHING,
+  // Sustained usage-reactive state + transient one-shot reactions (Tamagotchi layer).
+  SC_SLEEPY, SC_FEEDING, SC_GAME_WIN, SC_GAME_LOSE, SC_GREET,
+  SC_COUNT
 };
 
 static const uint8_t POOL_SLEEP[]      = { CL_SLEEPING };
@@ -62,12 +65,19 @@ static const uint8_t POOL_HEART[]      = { CL_HAPPY };
 static const uint8_t POOL_DISCONNECT[] = { CL_GOING_AWAY };
 static const uint8_t POOL_LOWBATT[]    = { CL_GOING_AWAY };
 static const uint8_t POOL_BREATHING[]  = { CL_IDLE };
+// Tamagotchi scenes — all reuse existing sprites (zero new art / flash).
+static const uint8_t POOL_SLEEPY[]     = { CL_SLEEPING };   // rate-limited / low energy
+static const uint8_t POOL_FEEDING[]    = { CL_HAPPY };
+static const uint8_t POOL_GAMEWIN[]    = { CL_HAPPY };
+static const uint8_t POOL_GAMELOSE[]   = { CL_DIZZY };
+static const uint8_t POOL_GREET[]      = { CL_HAPPY };
 
 struct Pool { const uint8_t* items; uint8_t n; };
 static const Pool POOLS[SC_COUNT] = {
   { POOL_SLEEP, 1 }, { POOL_IDLE, 2 }, { POOL_BUSY, 6 }, { POOL_ATTENTION, 5 },
   { POOL_CELEBRATE, 1 }, { POOL_DIZZY, 1 }, { POOL_HEART, 1 },
   { POOL_DISCONNECT, 1 }, { POOL_LOWBATT, 1 }, { POOL_BREATHING, 1 },
+  { POOL_SLEEPY, 1 }, { POOL_FEEDING, 1 }, { POOL_GAMEWIN, 1 }, { POOL_GAMELOSE, 1 }, { POOL_GREET, 1 },
 };
 
 // Mirrors PersonaState in main.cpp: 0=sleep 1=idle 2=busy 3=attention
@@ -75,14 +85,20 @@ static const Pool POOLS[SC_COUNT] = {
 // showDisconnect is a transient flag (set for a few seconds when the link
 // actually drops), NOT "currently disconnected" — so a never-connected boot
 // rests on idle instead of looping the going_away animation forever.
-static Scene sceneFor(uint8_t persona, bool showDisconnect, bool lowBatt, bool breathing) {
+//
+// `sleepy` is a sustained context state (rate-limited / low energy). Precedence:
+// breathing > disconnect > low-battery > approval(attention) > sleepy > persona.
+// Approval outranks sleepy so a pending permission is never hidden behind a nap;
+// disconnect/low-battery stay above approval as before (link/power are critical).
+static Scene sceneFor(uint8_t persona, bool showDisconnect, bool lowBatt, bool sleepy, bool breathing) {
   if (breathing)      return SC_BREATHING;
   if (showDisconnect) return SC_DISCONNECTED;
   if (lowBatt)        return SC_LOWBATT;
+  if (persona == 3)   return SC_ATTENTION;   // approval pending beats sleepy
+  if (sleepy)         return SC_SLEEPY;
   switch (persona) {
     case 0: return SC_SLEEP;
     case 2: return SC_BUSY;
-    case 3: return SC_ATTENTION;
     case 4: return SC_CELEBRATE;
     case 5: return SC_DIZZY;
     case 6: return SC_HEART;
@@ -108,8 +124,11 @@ static bool      ready          = false;
 static bool      peek           = false;
 static bool      g_lowBatt      = false;
 static bool      g_breathing    = false;
+static bool      g_sleepy       = false;   // sustained: rate-limited / low energy
 static bool      prevConnected  = false;   // edge-detect link drops
 static uint32_t  disconnectUntil = 0;      // going_away shows until this millis()
+static int       reactionScene   = SC_IDLE; // active transient reaction scene
+static uint32_t  reactionUntil   = 0;       // reaction shows until this millis()
 static int       lastScene   = -1;
 static int       curSprite   = CL_IDLE;
 static int       curFrame    = 0;
@@ -142,6 +161,19 @@ void clawdSetPeek(bool p) {
 void clawdInvalidate() {
   lastScene   = -1;   // force scene re-eval + variant re-pick
   forceRedraw = true;
+}
+
+void clawdSetSleepy(bool sleepy) { g_sleepy = sleepy; }
+
+void clawdTriggerScene(uint8_t reaction, uint16_t durationMs) {
+  switch (reaction) {
+    case CLAWD_RX_FEED:  reactionScene = SC_FEEDING;   break;
+    case CLAWD_RX_WIN:   reactionScene = SC_GAME_WIN;  break;
+    case CLAWD_RX_LOSE:  reactionScene = SC_GAME_LOSE; break;
+    case CLAWD_RX_GREET: reactionScene = SC_GREET;     break;
+    default: return;
+  }
+  reactionUntil = millis() + durationMs;
 }
 
 // Decode one RLE frame, centered, into the fixed-size canvas. The border
@@ -197,7 +229,18 @@ static void render(TFT_eSprite* dst, uint8_t persona, bool toHome) {
   uint32_t now = millis();
 
   bool showDisconnect = (int32_t)(now - disconnectUntil) < 0;
-  Scene sc = sceneFor(persona, showDisconnect, g_lowBatt, g_breathing);
+  Scene base = sceneFor(persona, showDisconnect, g_lowBatt, g_sleepy, g_breathing);
+  // Precedence: approval / breathing / battery / disconnect outrank a transient
+  // reaction; a reaction overrides only the calm/persona scenes (idle, sleepy,
+  // busy, celebrate, ...). An approval cancels a playing reaction so it can't
+  // resume and bury the next prompt.
+  bool reactionActive = (int32_t)(now - reactionUntil) < 0;
+  if (base == SC_ATTENTION) { reactionActive = false; reactionUntil = 0; }
+  Scene sc;
+  if (reactionActive && base != SC_BREATHING && base != SC_LOWBATT && base != SC_DISCONNECTED)
+    sc = (Scene)reactionScene;
+  else
+    sc = base;
   bool sceneChanged = ((int)sc != lastScene);
   if (sceneChanged) {
     lastScene = (int)sc;

@@ -23,6 +23,7 @@ static const Note MEL_ALERT[]      = {{1200, 80}, {0, 50}, {1500, 100}};        
 static const Note MEL_APPROVE[]    = {{2000, 60}, {2600, 110}};                       // bright up
 static const Note MEL_DENY[]       = {{700, 80}, {500, 140}};                         // low down
 static const Note MEL_LEVELUP[]    = {{784, 80}, {988, 80}, {1175, 80}, {1568, 180}}; // arpeggio
+static const Note MEL_SIGH[]       = {{392, 180}, {294, 320}};                        // G4-D4 soft descending — rate-limited "sigh"
 
 inline void melodyStop() { _melSeq = nullptr; _melLen = 0; _melIdx = 0; }
 

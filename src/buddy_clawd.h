@@ -32,3 +32,14 @@ void clawdSetPeek(bool peek);
 
 // Force a full redraw + variant re-pick on the next tick (mode switch, overlay close).
 void clawdInvalidate();
+
+// Sustained "sleepy" state (rate-limited / low energy). Set each loop; persists
+// for exactly as long as the state holds. Outranks the resting persona but
+// yields to a pending approval (P_ATTENTION), low battery, and link-drop scenes.
+void clawdSetSleepy(bool sleepy);
+
+// Transient one-shot reactions: play for durationMs, then fall back to the
+// persona/context scene. A pending approval (P_ATTENTION) takes precedence and
+// cancels a playing reaction so the device never buries an approval behind a toy.
+enum ClawdReaction { CLAWD_RX_FEED = 0, CLAWD_RX_WIN, CLAWD_RX_LOSE, CLAWD_RX_GREET };
+void clawdTriggerScene(uint8_t reaction, uint16_t durationMs);
