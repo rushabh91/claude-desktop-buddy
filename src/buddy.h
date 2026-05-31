@@ -8,6 +8,11 @@
 void buddyInit();
 void buddyTick(uint8_t personaState);
 void buddyInvalidate();
+
+// Animation-speed scale in percent (100 = normal). main.cpp sets this from
+// Claude usage so the buddy animates calmer when usage is low and more frantic
+// as it nears the limit. Renderers multiply their frame interval by this/100.
+extern uint16_t g_animScalePct;
 #include <M5StickCPlus.h>   // compat shim: provides TFT_eSPI / TFT_eSprite
 void buddyRenderTo(TFT_eSPI* tgt, uint8_t personaState);
 void buddySetSpecies(const char* name);

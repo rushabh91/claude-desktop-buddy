@@ -103,6 +103,16 @@ static uint32_t tickCount  = 0;
 static uint32_t nextTickAt = 0;
 static const uint32_t TICK_MS = 200;
 
+// Animation-speed scale (percent, 100 = normal). Set from usage in main.cpp.
+uint16_t g_animScalePct = 100;
+// TICK_MS scaled by the usage factor, clamped so it never stalls or races.
+static inline uint32_t buddyTickMs() {
+  uint32_t ms = (uint32_t)TICK_MS * g_animScalePct / 100;
+  if (ms < 80)  ms = 80;
+  if (ms > 400) ms = 400;
+  return ms;
+}
+
 #include "stats.h"
 
 void buddyInit() {
@@ -162,7 +172,7 @@ void buddyRenderTo(TFT_eSPI* tgt, uint8_t personaState) {
   uint8_t prevS = _scale; _scale = 1;
   if (personaState >= 7) personaState = B_IDLE;
   uint32_t now = millis();
-  if ((int32_t)(now - nextTickAt) >= 0) { nextTickAt = now + TICK_MS; tickCount++; }
+  if ((int32_t)(now - nextTickAt) >= 0) { nextTickAt = now + buddyTickMs(); tickCount++; }
   TFT_eSPI* prev = _tgt;
   _tgt = tgt;
   const Species* sp = SPECIES_TABLE[currentSpeciesIdx];
@@ -174,7 +184,7 @@ void buddyTick(uint8_t personaState) {
   uint32_t now = millis();
   bool ticked = false;
   if ((int32_t)(now - nextTickAt) >= 0) {
-    nextTickAt = now + TICK_MS;
+    nextTickAt = now + buddyTickMs();
     tickCount++;
     ticked = true;
   }

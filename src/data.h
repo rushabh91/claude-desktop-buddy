@@ -21,6 +21,10 @@ struct TamaState {
   char     promptHint[96];   // wider on the landscape screen for richer detail
   int8_t   sessionPct = -1;  // Claude usage: 5h session window % (-1 = unknown)
   int8_t   weeklyPct  = -1;  // Claude usage: weekly window %
+  int32_t  sessionResetSecs = -1;  // secs until 5h window resets at last push (-1 = unknown)
+  int32_t  weeklyResetSecs  = -1;  // secs until weekly window resets at last push
+  bool     usageLimited = false;   // true when actively rate-limited (>=100% / API status)
+  uint32_t usageStampMs = 0;       // millis() when reset values arrived (for live countdown)
 };
 
 // ---------------------------------------------------------------------------
@@ -111,6 +115,11 @@ static void _applyJson(const char* line, TamaState* out) {
   if (doc["session_pct"].is<int>() || doc["weekly_pct"].is<int>()) {
     if (doc["session_pct"].is<int>()) out->sessionPct = (int8_t)(int)doc["session_pct"];
     if (doc["weekly_pct"].is<int>())  out->weeklyPct  = (int8_t)(int)doc["weekly_pct"];
+    bool gotReset = false;
+    if (doc["session_reset"].is<int>()) { out->sessionResetSecs = (int32_t)(int)doc["session_reset"]; gotReset = true; }
+    if (doc["weekly_reset"].is<int>())  { out->weeklyResetSecs  = (int32_t)(int)doc["weekly_reset"];  gotReset = true; }
+    out->usageLimited = doc["rate_limited"] | false;
+    if (gotReset) out->usageStampMs = millis();
     return;
   }
 
@@ -183,6 +192,8 @@ inline void dataPoll(TamaState* out) {
     out->recentlyCompleted=s.c; out->tokensToday=s.tok; out->lastUpdated=now;
     out->connected = true;
     out->sessionPct = 45; out->weeklyPct = 30;   // fake usage for the status bar
+    out->sessionResetSecs = 2*3600 + 900; out->weeklyResetSecs = 3*86400;
+    out->usageLimited = false; out->usageStampMs = now;
     snprintf(out->msg, sizeof(out->msg), "demo: %s", s.n);
     // Dummy permission prompt during the "attention" scenario so the approval
     // panel (and its alert melody / LED) can be exercised without a live bridge.

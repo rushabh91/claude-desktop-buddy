@@ -592,6 +592,23 @@ void drawPasskey() {
   spr.print(b);
 }
 
+// Live seconds remaining until a usage window resets, decrementing from the
+// value the companion last sent (stamped at tama.usageStampMs). -1 if unknown.
+static int32_t usageResetLeft(int32_t storedSecs) {
+  if (storedSecs < 0) return -1;
+  uint32_t elapsed = (millis() - tama.usageStampMs) / 1000;
+  int32_t left = storedSecs - (int32_t)elapsed;
+  return left > 0 ? left : 0;
+}
+// Compact duration: "45m" / "2h" / "3d" (≥0). "?" when unknown.
+static void fmtDur(int32_t secs, char* buf, size_t n) {
+  if (secs < 0) { snprintf(buf, n, "?"); return; }
+  int32_t m = secs / 60;
+  if (m >= 1440)    snprintf(buf, n, "%ldd", (long)(m / 1440));
+  else if (m >= 60) snprintf(buf, n, "%ldh", (long)(m / 60));
+  else              snprintf(buf, n, "%ldm", (long)m);
+}
+
 void drawInfo() {
   const Palette& p = characterPalette();
   const int TOP = 70;
@@ -640,6 +657,24 @@ void drawInfo() {
     ln("  sessions  %u", tama.sessionsTotal);
     ln("  running   %u", tama.sessionsRunning);
     ln("  waiting   %u", tama.sessionsWaiting);
+    y += 8;
+    spr.setTextColor(p.text, p.bg);
+    ln("USAGE");
+    if (tama.sessionPct < 0 && tama.weeklyPct < 0) {
+      spr.setTextColor(p.textDim, p.bg);
+      ln("  companion not running");
+    } else {
+      char r1[8], r2[8];
+      fmtDur(usageResetLeft(tama.sessionResetSecs), r1, sizeof(r1));
+      fmtDur(usageResetLeft(tama.weeklyResetSecs),  r2, sizeof(r2));
+      spr.setTextColor(p.textDim, p.bg);
+      ln("  session  %d%% (%s)", tama.sessionPct < 0 ? 0 : tama.sessionPct, r1);
+      ln("  weekly   %d%% (%s)", tama.weeklyPct  < 0 ? 0 : tama.weeklyPct,  r2);
+      if (tama.usageLimited) {
+        spr.setTextColor(HOT, p.bg);
+        ln("  RATE LIMITED");
+      }
+    }
     y += 8;
     spr.setTextColor(p.text, p.bg);
     ln("LINK");
@@ -1032,13 +1067,16 @@ static void drawStatusBar(const Palette& p) {
   {
     int8_t sp = tama.sessionPct, wk = tama.weeklyPct;
     int hi = sp > wk ? sp : wk;
-    uint16_t uc = (hi < 0) ? p.textDim : (hi >= 90 ? HOT : hi >= 70 ? 0xFFE0 : GREEN);
+    uint16_t uc = tama.usageLimited ? HOT
+                : (hi < 0) ? p.textDim : (hi >= 90 ? HOT : hi >= 70 ? 0xFFE0 : GREEN);
     char ub[16];
     if (sp < 0 && wk < 0) strcpy(ub, "S--% W--%");
     else snprintf(ub, sizeof(ub), "S%d%% W%d%%", sp < 0 ? 0 : sp, wk < 0 ? 0 : wk);
     spr.setTextColor(uc, p.bg);
     spr.setCursor(92, 8);
     spr.print(ub);
+    // Rate-limited warning bang (fits before the DND moon at x=172).
+    if (tama.usageLimited) { spr.setTextColor(HOT, p.bg); spr.print(" !"); }
   }
 
   // Battery: outlined cell + fill + percentage. The Fire's IP5306 only reports
@@ -1245,6 +1283,14 @@ void loop() {
   if (baseState == P_IDLE && (int32_t)(now - wakeTransitionUntil) < 0) baseState = P_SLEEP;
 
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
+
+  // Usage-reactive animation pacing (Clawdmeter-style): the buddy animates
+  // calmer when Claude usage is low and more frantic as it nears the limit.
+  // 0% → 130% frame interval (slower); 100% → 70% (faster). Unknown → 100%.
+  {
+    int hiU = tama.sessionPct > tama.weeklyPct ? tama.sessionPct : tama.weeklyPct;
+    g_animScalePct = (hiU < 0) ? 100 : (uint16_t)(130 - (hiU * 60 / 100));
+  }
 
   // Celebrate chime: ascending two-note ta-da on state entry, once per window.
   // Edge-triggered so it doesn't re-fire every loop tick during the celebrate state.

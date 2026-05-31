@@ -1,4 +1,5 @@
 #include "buddy_clawd.h"
+#include "buddy.h"   // g_animScalePct (usage-driven animation speed)
 #include "clawd/clawd_sprites.h"
 #include <esp_heap_caps.h>
 #include <esp_random.h>
@@ -213,7 +214,10 @@ static void render(TFT_eSprite* dst, uint8_t persona, bool toHome) {
   const ClawdSprite& s = SPRITES[curSprite];
   if (advance) {
     if (!sceneChanged) curFrame = (curFrame + 1) % s.frames;
-    nextFrameAt = now + FRAME_MS;
+    uint32_t fms = (uint32_t)FRAME_MS * g_animScalePct / 100;
+    if (fms < 40)  fms = 40;
+    if (fms > 160) fms = 160;
+    nextFrameAt = now + fms;
   }
   forceRedraw = false;
 
