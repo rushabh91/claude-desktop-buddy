@@ -95,9 +95,12 @@ uint16_t danceBeat    = 0;
 uint16_t danceMisses  = 0;
 uint32_t danceBeatAt  = 0;
 uint16_t danceBeatMs  = 0;        // current beat interval; starts long, shortens
-bool     danceShook   = false;
-uint32_t danceMotionMs = 0;       // last time motion was above the calm threshold
-const uint16_t DANCE_CALM_HOLD_MS = 180;   // must be still this long before a shake counts
+bool     danceShook     = false;
+uint32_t danceStillStart = 0;     // millis the current still run began (0 = moving)
+uint16_t danceMaxStill  = 0;      // longest still run within the current beat (ms)
+// A real shake has a rest within the beat (settle→shake→settle); continuous
+// shaking has none. So a beat scores only if it had both a shake AND a still run.
+const uint16_t DANCE_STILL_MS = 100;
 const uint16_t DANCE_BEATS = 24, DANCE_LIVES = 3;
 const uint16_t DANCE_BEAT_START = 3000, DANCE_BEAT_MIN = 480, DANCE_BEAT_DEC = 110;
 uint8_t infoPage = 0;
@@ -1275,7 +1278,7 @@ static void drawGame() {
       // shake, then a confirmation until the next beat.
       if (danceBeat == 0) {
         spr.setTextColor(0x4208); spr.drawString("get ready...", CX, 184);
-      } else if (danceShook) {
+      } else if (danceShook && danceMaxStill >= DANCE_STILL_MS) {
         spr.setTextColor(GREEN);  spr.drawString("nice!", CX, 184);
       } else {
         spr.setTextColor(0xFFE0); spr.drawString("* SHAKE NOW *", CX, 184);
@@ -1323,7 +1326,8 @@ void gameStart(uint8_t type) {
   danceBeat    = 0;
   danceMisses  = 0;
   danceShook   = false;
-  danceMotionMs = millis();
+  danceStillStart = 0;
+  danceMaxStill = 0;
   danceBeatMs  = DANCE_BEAT_START;
   danceBeatAt  = millis() + 1500;   // short intro before the first (slow 3s) beat
   statsAddBond(1);              // playing together deepens the bond
@@ -1591,26 +1595,31 @@ void loop() {
     // Shake Dance: a loud beep marks each beat; shake within the beat to score.
     // Beats start slow (long window) and speed up. 3 lives.
     if (gamePhase == 0) {
-      // Anti-loophole: a beat counts only as a SUSTAINED-calm → shake gesture.
-      // An oscillating continuous shake briefly dips low each cycle, so requiring
-      // ~180ms of continuous stillness before the shake defeats it.
+      // Track the longest still run this beat (a real shake leaves a rest), and
+      // whether a shake spike happened. Graded together at the beat boundary, so
+      // continuous shaking (no rest) misses while a deliberate shake scores.
       float d = shakeDelta();
-      bool calm = (now - danceMotionMs) >= DANCE_CALM_HOLD_MS;   // still long enough?
-      if (d > 0.9f && calm && !danceShook) {         // a real shake after settling
+      if (d < 0.25f) {                               // still
+        if (danceStillStart == 0) danceStillStart = now;
+        uint32_t run = now - danceStillStart;
+        if (run > danceMaxStill) danceMaxStill = (uint16_t)(run > 65535 ? 65535 : run);
+      } else {
+        danceStillStart = 0;                         // moving — reset the still run
+      }
+      if (d > 0.9f && !danceShook) {                 // a shake spike this beat
         danceShook = true;
         if (clawdMode) clawdTriggerScene(CLAWD_RX_WIN, 500);   // Clawd looks happy when shaken
       }
-      if (d > 0.25f) danceMotionMs = now;            // any motion resets the calm timer
       if ((int32_t)(now - danceBeatAt) >= 0) {
         if (danceBeat > 0) {                         // grade the beat that just ended
-          if (danceShook) {
+          if (danceShook && danceMaxStill >= DANCE_STILL_MS) {   // shook AND rested = real
             gameStreak++; danceCombo++;
             ledsFlash(CRGB::Green);
             beep(1400 + (danceCombo > 12 ? 12 : danceCombo) * 50, 60);
             statsEnergyBoost(1);                     // dancing energizes
           } else {
             danceMisses++; danceCombo = 0;
-            ledsFlash(CRGB::Red);                    // missed → lose a life (shown on screen)
+            ledsFlash(CRGB::Red);                    // no shake, or constant shaking → miss
           }
         }
         if (danceBeat >= DANCE_BEATS || danceMisses >= DANCE_LIVES) {
@@ -1618,7 +1627,7 @@ void loop() {
           gameNewBest = statsRecordGameScore(gameStreak);
           if (clawdMode) clawdTriggerScene(gameStreak >= DANCE_BEATS/2 ? CLAWD_RX_WIN : CLAWD_RX_LOSE, 1800);
         } else {
-          danceBeat++; danceShook = false;
+          danceBeat++; danceShook = false; danceMaxStill = 0; danceStillStart = 0;
           if (danceBeatMs > DANCE_BEAT_MIN + DANCE_BEAT_DEC) danceBeatMs -= DANCE_BEAT_DEC;
           else danceBeatMs = DANCE_BEAT_MIN;         // ramp the tempo up over the run
           danceBeatAt = now + danceBeatMs;
