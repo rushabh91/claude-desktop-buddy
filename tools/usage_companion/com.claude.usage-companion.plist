@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for the usage companion. Do not edit the __PLACEHOLDERS__ by hand —
+  run ./install-launchagent.sh, which fills them in and installs this to
+  ~/Library/LaunchAgents/. See README.md → "Auto-start on login".
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claude.usage-companion</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__SCRIPT__</string>
+    </array>
+
+    <!-- Start at login and keep it running (relaunch if it ever exits). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- launchd throttles relaunches to at least this many seconds apart. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <!-- Logs for debugging — tail these if the bar stays blank. -->
+    <key>StandardOutPath</key>
+    <string>__REPO__/tools/usage_companion/companion.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/tools/usage_companion/companion.log</string>
+</dict>
+</plist>

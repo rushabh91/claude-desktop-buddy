@@ -53,10 +53,18 @@ The companion auto-detects which characteristic the device exposes.
 ## How it works
 
 1. Reads the Claude Code OAuth token from the Keychain (or `.credentials.json`)
-2. `GET /api/oauth/usage` → `five_hour.utilization`, `seven_day.utilization`
+2. `GET /api/oauth/usage` → `five_hour`/`seven_day` `utilization` + `resets_at`
 3. Connects to any BLE device named `Claude*`
-4. Writes `{"session_pct":N,"weekly_pct":M}\n` every 5 min; reconnects on drop
-5. Re-reads the token if the API returns 401 (Claude Code refreshes it periodically)
+4. Writes a compact JSON payload every 5 min; reconnects on drop:
+   `{"session_pct":N,"weekly_pct":M,"session_reset":secs,"weekly_reset":secs,"rate_limited":bool}`
+   (`*_reset` = seconds until that window resets; `rate_limited` only sent when true)
+5. If the token is stale, nudges `claude auth status` so the CLI refreshes its own keychain
+   item, then retries (we never mint/write tokens ourselves)
+6. **Fallback:** if `/api/oauth/usage` fails, makes a 1-token `/v1/messages` call and reads the
+   `anthropic-ratelimit-unified-*` response headers (Clawdmeter's approach)
+
+The device shows session/weekly % in the status bar (with a red `!` when rate-limited) and the
+full percentages + reset countdowns on the **info screen** (hold/press to the CLAUDE page).
 
 ## Troubleshooting
 
