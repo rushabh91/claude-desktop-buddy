@@ -103,6 +103,10 @@ uint16_t danceMaxStill  = 0;      // longest still run within the current beat (
 const uint16_t DANCE_STILL_MS = 100;
 const uint16_t DANCE_BEATS = 24, DANCE_LIVES = 3;
 const uint16_t DANCE_BEAT_START = 3000, DANCE_BEAT_MIN = 480, DANCE_BEAT_DEC = 110;
+// Stillness/shake are judged against a FIXED gravity reference (|accel|≈1g at rest),
+// not the adaptive shakeDelta() baseline — see the dance grader for why.
+const float    DANCE_STILL_G = 0.12f;  // |accel|-1g below this = genuinely still
+const float    DANCE_SHAKE_G = 0.60f;  // |accel|-1g above this = a deliberate shake spike
 uint8_t infoPage = 0;
 uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
@@ -1330,6 +1334,8 @@ void gameStart(uint8_t type) {
   danceMaxStill = 0;
   danceBeatMs  = DANCE_BEAT_START;
   danceBeatAt  = millis() + 1500;   // short intro before the first (slow 3s) beat
+  // Re-seed the shake baseline so the post-game shake-to-dizzy path starts fresh.
+  { float ax, ay, az; M5.Imu.getAccelData(&ax, &ay, &az); accelBaseline = sqrtf(ax*ax + ay*ay + az*az); }
   statsAddBond(1);              // playing together deepens the bond
   statsMarkActivity();          // playing counts as activity for mood
   // idle sprite while playing: catch → walking, dance → grooving
@@ -1598,15 +1604,21 @@ void loop() {
       // Track the longest still run this beat (a real shake leaves a rest), and
       // whether a shake spike happened. Graded together at the beat boundary, so
       // continuous shaking (no rest) misses while a deliberate shake scores.
-      float d = shakeDelta();
-      if (d < 0.25f) {                               // still
+      // Judge stillness and shake against a FIXED gravity reference (|accel|≈1g at
+      // rest), NOT the adaptive shakeDelta() baseline. The baseline drifts up under
+      // sustained shaking and would log a fake "rest" mid-shake — re-opening the
+      // continuous-shake loophole. Raw deviation from 1g can't be fooled that way.
+      float ax, ay, az;
+      M5.Imu.getAccelData(&ax, &ay, &az);
+      float g = fabsf(sqrtf(ax*ax + ay*ay + az*az) - 1.0f);
+      if (g < DANCE_STILL_G) {                       // genuinely still
         if (danceStillStart == 0) danceStillStart = now;
         uint32_t run = now - danceStillStart;
         if (run > danceMaxStill) danceMaxStill = (uint16_t)(run > 65535 ? 65535 : run);
       } else {
         danceStillStart = 0;                         // moving — reset the still run
       }
-      if (d > 0.9f && !danceShook) {                 // a shake spike this beat
+      if (g > DANCE_SHAKE_G && !danceShook) {         // a deliberate shake spike this beat
         danceShook = true;
         if (clawdMode) clawdTriggerScene(CLAWD_RX_WIN, 500);   // Clawd looks happy when shaken
       }
