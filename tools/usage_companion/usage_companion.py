@@ -127,11 +127,13 @@ def get_access_token() -> str | None:
 
 
 # ── CLI token-refresh nudge ─────────────────────────────────────────────────────
-# Claude Code's OAuth token lasts ~8-12h and the `claude` CLI refreshes it on its
-# own when it expires. We don't mint/write tokens ourselves (risky + the credential
-# is owned by Claude Code). Instead, when our read finds no valid token, we run a
-# cheap `claude auth status` so the CLI can refresh its own keychain item, then
-# re-read. Best-effort: if it doesn't help, we just skip the cycle.
+# Claude Code's OAuth access token lasts ~8h. The `claude` CLI refreshes it (via
+# its refresh token) only when it actually makes a request — NOT on `auth status`
+# (verified no-op on CLI 2.1.153). We don't mint/write tokens ourselves (risky +
+# the credential is owned by Claude Code). Instead, when our read finds no valid
+# token, we fire one minimal headless `claude -p` call so the CLI refreshes its own
+# keychain item, then re-read. Best-effort: if the refresh token is gone too (a
+# real logout), the call fails and we just skip the cycle until the user logs in.
 
 _claude_bin: str | None = None
 
@@ -161,9 +163,11 @@ def _nudge_cli_refresh() -> None:
               "(set CLAUDE_BIN=/abs/path/to/claude)", flush=True)
         return
     try:
-        subprocess.run([_claude_bin, "auth", "status"],
+        # A real request forces the refresh; `auth status` does not. Output is
+        # discarded. Fires only when our read found a stale token (~once per 8h).
+        subprocess.run([_claude_bin, "-p", "ok", "--max-turns", "1"],
                        stdin=subprocess.DEVNULL, capture_output=True,
-                       text=True, timeout=20)
+                       text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         pass
 
