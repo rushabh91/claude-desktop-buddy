@@ -2,8 +2,9 @@
 #include <Arduino.h>
 #include <Preferences.h>
 
-// Header-only with file-static state: include from exactly one translation
-// unit (main.cpp). Including from a second .cpp produces duplicate symbols.
+// State is defined once in stats.cpp and declared extern here, so any module can
+// include this header and share the same _stats / _settings / _prefs. The inline
+// accessors below all operate on that single shared instance.
 
 // Persistent stats backed by NVS. Load once at boot; save sparingly
 // (NVS sectors have ~100K write cycles). We save on significant events
@@ -26,9 +27,9 @@ struct Stats {
   uint32_t firstBootEpoch;  // local epoch at first RTC sync (age anchor); 0 = unknown
 };
 
-static Stats _stats;
-static Preferences _prefs;
-static bool _dirty = false;
+extern Stats _stats;          // defined in stats.cpp
+extern Preferences _prefs;
+extern bool _dirty;
 
 inline void statsLoad() {
   _prefs.begin("buddy", true);
@@ -98,18 +99,18 @@ inline void statsOnApproval(uint32_t secondsToRespond) {
 // Tokens feed the pet. 50K per level, 5K per pip on the fed bar.
 // Bridge sends cumulative since its start; we add the delta. A drop means
 // the bridge restarted — resync without adding, don't lose NVS progress.
-static uint32_t _lastBridgeTokens = 0;
-static bool _tokensSynced = false;       // first-sight latch — see below
-static bool _levelUpPending = false;
+extern uint32_t _lastBridgeTokens;
+extern bool _tokensSynced;       // first-sight latch — see below
+extern bool _levelUpPending;
 // Activity clock: stamped by Claude token deltas AND game play. Drives mood.
 // millis()-based, RAM-only (reboot-safe; re-derives).
-static uint32_t _lastActivityMs    = 0;
-static uint32_t _lastHungerDriftMs = 0;
+extern uint32_t _lastActivityMs;
+extern uint32_t _lastHungerDriftMs;
 // Energy is a 0..100 RAM meter: token consumption drains it, a nap refills it,
 // and it slowly regens when Claude is idle. RAM-only (volatile; boots at tier 3).
-static int16_t  _energyPts = 60;
-static uint32_t _lastTokenMs = 0;            // last token consumption (idle = no tokens)
-static uint32_t _lastEnergyRegenMs = 0;
+extern int16_t  _energyPts;
+extern uint32_t _lastTokenMs;            // last token consumption (idle = no tokens)
+extern uint32_t _lastEnergyRegenMs;
 static const uint32_t TOKENS_PER_ENERGY_PT = 2000;   // 1 energy point per ~2000 tokens
 static const uint32_t ENERGY_IDLE_MS  = 2UL * 60 * 1000;   // idle grace before regen
 static const uint32_t ENERGY_REGEN_MS = 2UL * 60 * 1000;   // +1 pt per this long idle (slow)
@@ -305,7 +306,7 @@ struct Settings {
   uint8_t bright;    // 0..4, persisted so it survives reboots
 };
 
-static Settings _settings = { true, true, false, true, true, false, 0, 4 };
+extern Settings _settings;   // defined in stats.cpp
 
 inline void settingsLoad() {
   _prefs.begin("buddy", true);
@@ -335,8 +336,8 @@ inline void settingsSave() {
   _prefs.end();
 }
 
-static char _petName[24] = "Buddy";
-static char _ownerName[32] = "";
+extern char _petName[24];    // defined in stats.cpp
+extern char _ownerName[32];
 
 inline void petNameLoad() {
   _prefs.begin("buddy", true);
@@ -348,7 +349,7 @@ inline void petNameLoad() {
 // Strip JSON-breaking chars — these names go into a printf'd JSON string
 // unescaped (xfer.h status response). A quote persists to NVS and breaks
 // the status endpoint until the name is re-set.
-static void _safeCopy(char* dst, size_t dstLen, const char* src) {
+inline void _safeCopy(char* dst, size_t dstLen, const char* src) {
   size_t j = 0;
   for (size_t i = 0; src[i] && j < dstLen - 1; i++) {
     char c = src[i];
