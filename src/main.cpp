@@ -171,7 +171,7 @@ static void wake() {
   if (dimmed) { applyBrightness(); dimmed = false; }
 }
 bool     responseSent = false;
-bool     promptDismissed = false;    // B hides the panel until the question changes/clears
+bool     promptDismissed = false;    // B hides the panel for the whole life of the request (re-arms on clear)
 bool     promptTimedOut = false;     // true after PROMPT_TIMEOUT_MS with no response
 bool     promptPanelUp = false;      // approval panel on screen (awaiting or "sent...")
 
@@ -1430,7 +1430,7 @@ void loop() {
   // A dismissed prompt should stop alerting. The pending session keeps
   // activeState at P_ATTENTION, but once B is pressed (promptDismissed, sticky)
   // the LED alert goes quiet — drop attention → idle for the bar until the
-  // question changes or clears. (LED only; the on-screen buddy is unchanged.)
+  // request clears. (LED only; the on-screen buddy is unchanged.)
   PersonaState ledState =
       (promptDismissed && activeState == P_ATTENTION) ? P_IDLE : activeState;
   ledsSetState(ledState,
@@ -1459,10 +1459,20 @@ void loop() {
     }
   }
 
-  // New question = the tool/hint content changed (or cleared). Keyed on
-  // content, not prompt.id, so the companion's per-heartbeat id churn doesn't
-  // look like a fresh prompt. A genuinely new/changed question (or the prompt
-  // clearing) resets the dismiss; an unchanged question stays dismissed.
+  // Re-arm only when the request CLEARS (promptId empties). Once you dismiss a
+  // prompt (B, or after answering) it stays hidden for the ENTIRE life of that
+  // request — content jitter (heartbeat hint churn, mirrored-AskUserQuestion
+  // re-renders, the companion's per-beat id churn) can never re-nag you. The
+  // next request, after this one clears, prompts fresh.
+  if (!tama.promptId[0]) {
+    promptDismissed = false;
+    responseSent    = false;
+    promptTimedOut  = false;
+  }
+
+  // New question = the tool/hint content changed. Keyed on content, not prompt.id
+  // (the companion regenerates the id every heartbeat). Alert + jump to the
+  // approval screen ONLY for a pending prompt you have NOT already dismissed.
   bool questionChanged = strcmp(tama.promptTool, lastPromptTool) != 0
                       || strcmp(tama.promptHint, lastPromptHint) != 0;
   if (questionChanged) {
@@ -1470,10 +1480,9 @@ void loop() {
     lastPromptTool[sizeof(lastPromptTool)-1] = 0;
     strncpy(lastPromptHint, tama.promptHint, sizeof(lastPromptHint)-1);
     lastPromptHint[sizeof(lastPromptHint)-1] = 0;
-    responseSent = false;
-    promptDismissed = false;
-    promptTimedOut = false;
-    if (tama.promptId[0]) {
+    if (tama.promptId[0] && !promptDismissed) {
+      responseSent   = false;
+      promptTimedOut = false;
       promptArrivedMs = millis();
       wake();
       PLAY_MELODY(MEL_ALERT);   // approval-arrived alert
@@ -1498,10 +1507,9 @@ void loop() {
     }
   }
 
-  // Dismiss is sticky: it persists until the question's content changes or
-  // clears (handled by the content edge check above) — no time-based re-show.
-  // Auto-dismiss after 5 minutes so a crashed bridge never leaves the panel stuck.
-  if (!tama.promptId[0]) promptTimedOut = false;
+  // Dismiss is sticky for the whole life of the request — it never re-shows on a
+  // content change, only re-arms when the prompt clears (the re-arm block above).
+  // Auto-time-out after 5 minutes so a crashed bridge never leaves it pending.
   if (tama.promptId[0] && !responseSent && !promptTimedOut &&
       (int32_t)(now - promptArrivedMs) >= (int32_t)PROMPT_TIMEOUT_MS)
     promptTimedOut = true;
